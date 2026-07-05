@@ -34,6 +34,10 @@ uint32_t ytext_len(CYrsTxn *txn, const uint8_t *name, size_t name_len);
 /* Delta as a JSON array of { "insert": <value>, "attributes"?: {..} } ops. */
 uint8_t *ytext_delta(CYrsTxn *txn, const uint8_t *name, size_t name_len, size_t *out_len);
 
+/* Text change observer: callback receives the change as a Yjs-style JSON delta array. */
+typedef void (*YTextObserverCallback)(void *user_data, const uint8_t *delta_json, size_t delta_json_len);
+CYrsSubscription *ytext_observe(CYrsDoc *doc, const uint8_t *name, size_t name_len, YTextObserverCallback cb, void *user_data);
+
 /* --- Encoding & sync (v1) --- */
 uint8_t *ytxn_state_as_update_v1(CYrsTxn *txn, const uint8_t *sv, size_t sv_len, size_t *out_len);
 uint8_t *ytxn_state_vector_v1(CYrsTxn *txn, size_t *out_len);

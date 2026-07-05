@@ -26,10 +26,11 @@ use yrs::sync::{Awareness, AwarenessUpdate};
 use yrs::undo::{Options as UndoOptions, UndoManager};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
+use yrs::types::Delta;
 use yrs::{
     diff_updates_v1, merge_updates_v1, Any, Assoc, ClientID, Doc, GetString, IndexedSequence,
-    OffsetKind, Options, Origin, Out, ReadTxn, StateVector, StickyIndex, Subscription, Text,
-    Transact, TransactionMut, Update, UpdateEvent, WriteTxn,
+    Observable, OffsetKind, Options, Origin, Out, ReadTxn, StateVector, StickyIndex, Subscription,
+    Text, Transact, TransactionMut, Update, UpdateEvent, WriteTxn,
 };
 
 pub const CYRS_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -73,6 +74,42 @@ fn attrs_from_json(bytes: &[u8]) -> Attrs {
         attrs.insert(Arc::from(k.as_str()), any);
     }
     attrs
+}
+
+/// Converts a yrs `Attrs` map into a serde_json object.
+fn attrs_to_value(attrs: &Attrs) -> Value {
+    Value::Object(attrs.iter().map(|(k, v)| (k.to_string(), any_to_value(v))).collect())
+}
+
+/// Serializes a text delta (`&[Delta]`) into a Yjs-style JSON op array.
+fn delta_to_json(delta: &[Delta]) -> Vec<u8> {
+    let mut ops: Vec<Value> = Vec::new();
+    for d in delta {
+        let mut op = serde_json::Map::new();
+        match d {
+            Delta::Inserted(value, attrs) => {
+                let insert = match value {
+                    Out::Any(a) => any_to_value(a),
+                    _ => Value::Null,
+                };
+                op.insert("insert".to_string(), insert);
+                if let Some(attrs) = attrs {
+                    op.insert("attributes".to_string(), attrs_to_value(attrs));
+                }
+            }
+            Delta::Retain(n, attrs) => {
+                op.insert("retain".to_string(), Value::Number((*n as u64).into()));
+                if let Some(attrs) = attrs {
+                    op.insert("attributes".to_string(), attrs_to_value(attrs));
+                }
+            }
+            Delta::Deleted(n) => {
+                op.insert("delete".to_string(), Value::Number((*n as u64).into()));
+            }
+        }
+        ops.push(Value::Object(op));
+    }
+    serde_json::to_vec(&Value::Array(ops)).unwrap_or_default()
 }
 
 /// Converts a yrs `Any` into a serde_json `Value` for delta serialization.
@@ -242,6 +279,28 @@ pub unsafe extern "C" fn ytext_delta(
         ops.push(Value::Object(op));
     }
     bytes_out(serde_json::to_vec(&Value::Array(ops)).unwrap_or_default(), out_len)
+}
+
+/// C callback: (user_data, delta_json_ptr, delta_json_len). Buffer is call-scoped.
+pub type YTextObserverCallback = extern "C" fn(*mut c_void, *const u8, usize);
+
+/// Observes changes to the named text; the callback receives the change as a
+/// Yjs-style JSON delta array. Register with no live transaction.
+#[no_mangle]
+pub unsafe extern "C" fn ytext_observe(
+    doc: *mut Doc,
+    name: *const u8,
+    name_len: usize,
+    cb: YTextObserverCallback,
+    user_data: *mut c_void,
+) -> *mut Subscription {
+    let text = (*doc).get_or_insert_text(as_str(name, name_len));
+    let ud = user_data as usize;
+    let sub = text.observe(move |txn, e| {
+        let json = delta_to_json(e.delta(txn));
+        cb(ud as *mut c_void, json.as_ptr(), json.len());
+    });
+    Box::into_raw(Box::new(sub))
 }
 
 // ---- Encoding & sync (v1) ---------------------------------------------------

@@ -46,6 +46,6 @@ public final class YText: Sendable {
     /// Observes changes to this text. Callbacks fire outside the txn lock.
     @discardableResult
     public func observe(_ callback: @escaping @Sendable (YTextEvent) -> Void) -> YSubscription {
-        doc.engine.observeText(handle, callback)
+        doc.performExclusively { doc.engine.observeText(handle, callback) }
     }
 }

@@ -40,6 +40,12 @@ final class AwarenessChangeBox {
     init(_ callback: @escaping @Sendable (Awareness.Change) -> Void) { self.callback = callback }
 }
 
+/// Holds a text-change callback for the C trampoline.
+final class TextObserverBox {
+    let callback: @Sendable (YTextEvent) -> Void
+    init(_ callback: @escaping @Sendable (YTextEvent) -> Void) { self.callback = callback }
+}
+
 /// Holds a Swift update callback so the C trampoline can reach it via a `void*`.
 final class UpdateCallbackBox {
     let callback: @Sendable (Data, Origin?) -> Void
@@ -91,6 +97,15 @@ private func awarenessTrampoline(
         updated: ids(updatedPtr, updatedLen),
         removed: ids(removedPtr, removedLen)
     ))
+}
+
+/// C trampoline for `ytext_observe`: decodes the JSON delta into a `YTextEvent`.
+private func textObserverTrampoline(_ userData: UnsafeMutableRawPointer?, _ ptr: UnsafePointer<UInt8>?, _ len: Int) {
+    guard let userData else { return }
+    let box = Unmanaged<TextObserverBox>.fromOpaque(userData).takeUnretainedValue()
+    let data = (len > 0 && ptr != nil) ? Data(bytes: ptr!, count: len) : Data()
+    let delta = (try? JSONDecoder().decode([DeltaOpDTO].self, from: data))?.compactMap { $0.toDelta() } ?? []
+    box.callback(YTextEvent(delta: delta))
 }
 
 /// Phase-1 engine: a facade over the Rust `yrs` CRDT via the `cyrs` C ABI.
@@ -205,8 +220,8 @@ final class YrsEngine: YEngine, @unchecked Sendable {
         var outLen = 0
         let ptr = name.withUnsafeBufferPointer { n in ytext_delta(t, n.baseAddress, n.count, &outLen) }
         let data = consumeBytes(ptr, outLen)
-        guard let ops = try? JSONDecoder().decode([DeltaInsertDTO].self, from: data) else { return [] }
-        return ops.compactMap { op in op.insert.map { .insert($0, attributes: op.attributes) } }
+        guard let ops = try? JSONDecoder().decode([DeltaOpDTO].self, from: data) else { return [] }
+        return ops.compactMap { $0.toDelta() }
     }
 
     // MARK: Encoding & sync
@@ -347,8 +362,18 @@ final class YrsEngine: YEngine, @unchecked Sendable {
     }
 
     func observeText(_ handle: TextHandle, _ callback: @escaping @Sendable (YTextEvent) -> Void) -> YSubscription {
-        // Wired in a Phase-1 follow-up (needs yrs text observer + delta bridging).
-        YSubscription {}
+        let box = TextObserverBox(callback)
+        let userData = Unmanaged.passRetained(box).toOpaque()
+        let name = Array(handle.name.utf8)
+        guard let sub = name.withUnsafeBufferPointer({ n in ytext_observe(doc, n.baseAddress, n.count, textObserverTrampoline, userData) }) else {
+            Unmanaged<TextObserverBox>.fromOpaque(userData).release()
+            return YSubscription {}
+        }
+        let handles = SubHandles(sub: sub, userData: userData)
+        return YSubscription {
+            ysubscription_free(handles.sub)
+            Unmanaged<TextObserverBox>.fromOpaque(handles.userData).release()
+        }
     }
 
     // MARK: Helpers
@@ -373,10 +398,20 @@ final class YrsEngine: YEngine, @unchecked Sendable {
     }
 }
 
-/// Wire shape of one `toDelta` op (insert-only, as Yjs toDelta produces).
-private struct DeltaInsertDTO: Decodable {
+/// Wire shape of one delta op (insert / retain / delete), used by `toDelta` and
+/// the text change observer.
+private struct DeltaOpDTO: Decodable {
     let insert: YValue?
+    let retain: Int?
+    let delete: Int?
     let attributes: [String: YValue]?
+
+    func toDelta() -> Delta? {
+        if let insert { return .insert(insert, attributes: attributes) }
+        if let retain { return .retain(retain, attributes: attributes) }
+        if let delete { return .delete(delete) }
+        return nil
+    }
 }
 
 private extension YValue {

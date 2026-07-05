@@ -1,0 +1,17 @@
+[package]
+name = "cyrs"
+version = "0.1.0"
+edition = "2021"
+description = "C ABI over the Rust yrs CRDT, backing YSwift's Phase-1 engine (YrsEngine)."
+publish = false
+
+[lib]
+# staticlib: the linkable archive Swift consumes; lib: so Rust tests can use it.
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+yrs = "0.27"
+
+[dev-dependencies]
+serde_json = "1"
+base64 = "0.22"

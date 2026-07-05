@@ -18,13 +18,14 @@
 #![allow(clippy::missing_safety_doc)]
 
 use serde_json::Value;
+use std::ffi::c_void;
 use std::sync::Arc;
 use yrs::types::Attrs;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
-    Any, ClientID, Doc, GetString, OffsetKind, Options, ReadTxn, StateVector, Text, Transact,
-    TransactionMut, Update, WriteTxn,
+    Any, ClientID, Doc, GetString, OffsetKind, Options, Origin, ReadTxn, StateVector, Subscription,
+    Text, Transact, TransactionMut, Update, UpdateEvent, WriteTxn,
 };
 
 pub const CYRS_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -230,6 +231,59 @@ pub unsafe extern "C" fn ytxn_apply_update_v1(
         Ok(u) => (*txn).apply_update(u).is_ok(),
         Err(_) => false,
     }
+}
+
+// ---- Update observers & transaction origin ----------------------------------
+
+/// C callback: (user_data, origin_ptr, origin_len, update_ptr, update_len).
+/// `origin_ptr` is null / `origin_len` 0 when the transaction had no origin.
+/// All buffers are valid only for the duration of the call.
+pub type YUpdateCallback = extern "C" fn(*mut c_void, *const u8, usize, *const u8, usize);
+
+/// Subscribes to v1 update events. Returns an opaque subscription (null on
+/// error). Must be called with NO live transaction on `doc` (uses try_write).
+#[no_mangle]
+pub unsafe extern "C" fn ydoc_observe_update_v1(
+    doc: *mut Doc,
+    cb: YUpdateCallback,
+    user_data: *mut c_void,
+) -> *mut Subscription {
+    // Carry the pointer as usize so the 'static + Send + Sync closure is happy.
+    let ud = user_data as usize;
+    let result = (*doc).observe_update_v1(move |txn: &TransactionMut, e: &UpdateEvent| {
+        let (o_ptr, o_len) = match txn.origin() {
+            Some(o) => {
+                let s = o.as_ref();
+                (s.as_ptr(), s.len())
+            }
+            None => (std::ptr::null(), 0usize),
+        };
+        cb(ud as *mut c_void, o_ptr, o_len, e.update.as_ptr(), e.update.len());
+    });
+    match result {
+        Ok(sub) => Box::into_raw(Box::new(sub)),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Drops a subscription (unsubscribes the callback).
+#[no_mangle]
+pub unsafe extern "C" fn ysubscription_free(sub: *mut Subscription) {
+    if !sub.is_null() {
+        drop(Box::from_raw(sub));
+    }
+}
+
+/// Like `ytxn` but tags the write transaction with an origin (bytes are copied).
+#[no_mangle]
+pub unsafe extern "C" fn ytxn_with_origin(
+    doc: *mut Doc,
+    origin: *const u8,
+    origin_len: usize,
+) -> *mut TransactionMut<'static> {
+    let o = Origin::from(as_slice(origin, origin_len));
+    let txn: TransactionMut<'static> = std::mem::transmute((*doc).transact_mut_with(o));
+    Box::into_raw(Box::new(txn))
 }
 
 // ---- Memory -----------------------------------------------------------------

@@ -199,5 +199,96 @@
       "diff": "AQHpBwWE6QcEBywgd29ybGQA",
       "text": "Hello, world"
     }
+  ],
+  "incremental": [
+    {
+      "name": "typing",
+      "description": "three single-char inserts, one transaction each",
+      "clientID": 1001,
+      "transactions": [
+        [
+          {
+            "op": "insert",
+            "index": 0,
+            "text": "a"
+          }
+        ],
+        [
+          {
+            "op": "insert",
+            "index": 1,
+            "text": "b"
+          }
+        ],
+        [
+          {
+            "op": "insert",
+            "index": 2,
+            "text": "c"
+          }
+        ]
+      ],
+      "updates": [
+        "AQHpBwAEAQdjb250ZW50AWEA",
+        "AQHpBwGE6QcAAWIA",
+        "AQHpBwKE6QcBAWMA"
+      ],
+      "text": "abc"
+    },
+    {
+      "name": "insert_then_delete",
+      "description": "insert, then delete a range in a later transaction",
+      "clientID": 1001,
+      "transactions": [
+        [
+          {
+            "op": "insert",
+            "index": 0,
+            "text": "hello world"
+          }
+        ],
+        [
+          {
+            "op": "delete",
+            "index": 5,
+            "length": 6
+          }
+        ]
+      ],
+      "updates": [
+        "AQHpBwAEAQdjb250ZW50C2hlbGxvIHdvcmxkAA==",
+        "AAHpBwEFBg=="
+      ],
+      "text": "hello"
+    },
+    {
+      "name": "format_pass",
+      "description": "insert then bold, two transactions",
+      "clientID": 1001,
+      "transactions": [
+        [
+          {
+            "op": "insert",
+            "index": 0,
+            "text": "title"
+          }
+        ],
+        [
+          {
+            "op": "format",
+            "index": 0,
+            "length": 5,
+            "attributes": {
+              "bold": true
+            }
+          }
+        ]
+      ],
+      "updates": [
+        "AQHpBwAEAQdjb250ZW50BXRpdGxlAA==",
+        "AQLpBwVG6QcABGJvbGQEdHJ1ZYbpBwQEYm9sZARudWxsAA=="
+      ],
+      "text": "title"
+    }
   ]
 }

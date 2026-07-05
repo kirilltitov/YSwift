@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Synchronization
 @testable import YSwift
 
 // MARK: - Fixture model (mirrors fixtures/generate.mjs output)
@@ -48,11 +49,21 @@ struct GoldenSuite: Codable {
         let text: String
     }
 
+    struct IncrementalFixture: Codable {
+        let name: String
+        let description: String
+        let clientID: UInt64
+        let transactions: [[GoldenOp]]
+        let updates: [String]
+        let text: String
+    }
+
     let meta: Meta
     let encode: [EncodeFixture]
     let merge: [MergeFixture]
     let converge: [ConvergeFixture]
     let diff: [DiffFixture]
+    let incremental: [IncrementalFixture]
 }
 
 struct GoldenOp: Codable {
@@ -203,5 +214,36 @@ struct GoldenVectorTests {
             #expect(apply(updates) == f.text, "\(f.name): forward order differs")
             #expect(apply(updates.reversed()) == f.text, "\(f.name): reverse order differs")
         }
+    }
+
+    @Test("onUpdate emits byte-identical incremental updates in order")
+    func onUpdateIncremental() throws {
+        let suite = try Golden.loadSuite()
+        for f in suite.incremental {
+            let doc = YDoc(clientID: f.clientID)
+            let text = doc.text(suite.meta.key)
+            let captured = Mutex<[String]>([])
+            let sub = doc.onUpdate { update, _ in
+                captured.withLock { $0.append(update.base64EncodedString()) }
+            }
+            for txnOps in f.transactions {
+                doc.transact { txn in Golden.replay(txnOps, into: text, txn) }
+            }
+            sub.cancel()
+            #expect(captured.withLock { $0 } == f.updates, "\(f.name): incremental updates differ")
+            #expect(doc.transact { txn in text.string(txn) } == f.text, "\(f.name): final text differs")
+        }
+    }
+
+    @Test("transaction origin round-trips to the update observer")
+    func originRoundTrip() {
+        let doc = YDoc(clientID: 1)
+        let text = doc.text("content")
+        let seen = Mutex<[String?]>([])
+        let sub = doc.onUpdate { _, origin in seen.withLock { $0.append(origin?.rawValue) } }
+        doc.transact(origin: "local") { txn in text.insert(txn, at: 0, "a") }
+        doc.transact { txn in text.insert(txn, at: 1, "b") }
+        sub.cancel()
+        #expect(seen.withLock { $0 } == ["local", nil])
     }
 }

@@ -17,13 +17,48 @@ final class RawTransaction {
     init(_ ptr: OpaquePointer) { self.ptr = ptr }
 }
 
+/// Holds a Swift update callback so the C trampoline can reach it via a `void*`.
+final class UpdateCallbackBox {
+    let callback: @Sendable (Data, Origin?) -> Void
+    init(_ callback: @escaping @Sendable (Data, Origin?) -> Void) { self.callback = callback }
+}
+
+/// Raw handles released when a subscription is cancelled. `@unchecked Sendable`:
+/// released exactly once, and the underlying yrs `Subscription` is `Send + Sync`.
+private struct SubHandles: @unchecked Sendable {
+    let sub: OpaquePointer
+    let userData: UnsafeMutableRawPointer
+}
+
+/// C trampoline for `ydoc_observe_update_v1`: rebuilds `Data`/`Origin` from the
+/// call-scoped buffers and invokes the boxed Swift callback.
+private func yrsUpdateTrampoline(
+    _ userData: UnsafeMutableRawPointer?,
+    _ originPtr: UnsafePointer<UInt8>?,
+    _ originLen: Int,
+    _ updatePtr: UnsafePointer<UInt8>?,
+    _ updateLen: Int
+) {
+    guard let userData else { return }
+    let box = Unmanaged<UpdateCallbackBox>.fromOpaque(userData).takeUnretainedValue()
+    let update = (updateLen > 0 && updatePtr != nil) ? Data(bytes: updatePtr!, count: updateLen) : Data()
+    let origin: Origin?
+    if originLen > 0, let originPtr {
+        origin = Origin(String(decoding: UnsafeBufferPointer(start: originPtr, count: originLen), as: UTF8.self))
+    } else {
+        origin = nil
+    }
+    box.callback(update, origin)
+}
+
 /// Phase-1 engine: a facade over the Rust `yrs` CRDT via the `cyrs` C ABI.
 ///
 /// `@unchecked Sendable` invariant: the raw `yrs` document is only ever touched
-/// while the owning `YDoc`'s `Mutex` is held (all transaction-scoped calls) or
-/// via the one-shot free path below; there is at most one live transaction per
-/// document. The engine holds no mutable shared state besides the (idempotently
-/// freed) doc — text types are resolved by name through the active transaction.
+/// while the owning `YDoc`'s `Mutex` is held (all transaction-scoped calls and
+/// subscription registration) or via the one-shot free path below; there is at
+/// most one live transaction per document. The engine holds no mutable shared
+/// state besides the (idempotently freed) doc — text types are resolved by name
+/// through the active transaction.
 final class YrsEngine: YEngine, @unchecked Sendable {
     private let doc: OpaquePointer
     let clientID: UInt64
@@ -53,7 +88,13 @@ final class YrsEngine: YEngine, @unchecked Sendable {
     func textHandle(_ name: String) -> TextHandle { TextHandle(name: name) }
 
     func beginTransaction(origin: Origin?, writable: Bool) -> YTransaction {
-        let raw = ytxn(doc)!
+        let raw: OpaquePointer
+        if let origin {
+            let bytes = Array(origin.rawValue.utf8)
+            raw = bytes.withUnsafeBufferPointer { ytxn_with_origin(doc, $0.baseAddress, $0.count)! }
+        } else {
+            raw = ytxn(doc)!
+        }
         return YTransaction(engine: self, origin: origin, writable: writable, raw: RawTransaction(raw))
     }
 
@@ -150,13 +191,24 @@ final class YrsEngine: YEngine, @unchecked Sendable {
         _ = bytes.withUnsafeBufferPointer { ytxn_apply_update_v1(t, $0.baseAddress, $0.count) }
     }
 
-    // MARK: Observers (wired in a Phase-1 follow-up; inert for now)
+    // MARK: Observers
 
     func onUpdate(_ callback: @escaping @Sendable (Data, Origin?) -> Void) -> YSubscription {
-        YSubscription {}
+        let box = UpdateCallbackBox(callback)
+        let userData = Unmanaged.passRetained(box).toOpaque()
+        guard let sub = ydoc_observe_update_v1(doc, yrsUpdateTrampoline, userData) else {
+            Unmanaged<UpdateCallbackBox>.fromOpaque(userData).release()
+            return YSubscription {}
+        }
+        let handles = SubHandles(sub: sub, userData: userData)
+        return YSubscription {
+            ysubscription_free(handles.sub)
+            Unmanaged<UpdateCallbackBox>.fromOpaque(handles.userData).release()
+        }
     }
 
     func observeText(_ handle: TextHandle, _ callback: @escaping @Sendable (YTextEvent) -> Void) -> YSubscription {
+        // Wired in a Phase-1 follow-up (needs yrs text observer + delta bridging).
         YSubscription {}
     }
 

@@ -68,7 +68,8 @@ public final class YDoc: Sendable {
     /// avoid echo loops (requirements §9.3). Callbacks fire outside the txn lock.
     @discardableResult
     public func onUpdate(_ callback: @escaping @Sendable (Data, Origin?) -> Void) -> YSubscription {
-        engine.onUpdate(callback)
+        // Serialize with transactions so registration never races a live txn.
+        sync.withLock { _ in engine.onUpdate(callback) }
     }
 
     /// Releases the resident document.

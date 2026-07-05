@@ -88,6 +88,29 @@ function diffFixture(name, description, clientID, opsA, opsB) {
   }
 }
 
+/** Applies one op to `t` (no transaction wrapper). */
+function applyOp1(t, o) {
+  switch (o.op) {
+    case 'insert': t.insert(o.index, o.text, o.attributes ?? undefined); break
+    case 'delete': t.delete(o.index, o.length); break
+    case 'format': t.format(o.index, o.length, o.attributes); break
+    default: throw new Error(`unknown op: ${o.op}`)
+  }
+}
+
+/** Captures the v1 incremental update fired per transaction (Yjs `update` event). */
+function incrementalFixture(name, description, clientID, transactions) {
+  const doc = new Y.Doc()
+  doc.clientID = clientID
+  const updates = []
+  doc.on('update', (u) => updates.push(b64(u)))
+  const t = doc.getText(KEY)
+  for (const ops of transactions) {
+    doc.transact(() => { for (const o of ops) applyOp1(t, o) })
+  }
+  return { name, description, clientID, transactions, updates, text: t.toString() }
+}
+
 const encode = [
   encodeFixture('empty', 'new doc, no ops', 1001, []),
   encodeFixture('ascii', 'plain ascii insert', 1001,
@@ -126,9 +149,25 @@ const diff = [
     [{ op: 'insert', index: 5, text: ', world' }]),
 ]
 
+const incremental = [
+  incrementalFixture('typing', 'three single-char inserts, one transaction each', 1001, [
+    [{ op: 'insert', index: 0, text: 'a' }],
+    [{ op: 'insert', index: 1, text: 'b' }],
+    [{ op: 'insert', index: 2, text: 'c' }],
+  ]),
+  incrementalFixture('insert_then_delete', 'insert, then delete a range in a later transaction', 1001, [
+    [{ op: 'insert', index: 0, text: 'hello world' }],
+    [{ op: 'delete', index: 5, length: 6 }],
+  ]),
+  incrementalFixture('format_pass', 'insert then bold, two transactions', 1001, [
+    [{ op: 'insert', index: 0, text: 'title' }],
+    [{ op: 'format', index: 0, length: 5, attributes: { bold: true } }],
+  ]),
+]
+
 const out = {
   meta: { yjsVersion: YJS_VERSION, format: 'v1', key: KEY, generatedBy: 'fixtures/generate.mjs' },
-  encode, merge, converge, diff,
+  encode, merge, converge, diff, incremental,
 }
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -136,5 +175,5 @@ const dest = join(here, '..', 'Tests', 'YSwiftTests', 'Fixtures')
 mkdirSync(dest, { recursive: true })
 writeFileSync(join(dest, 'golden_v13_6_31.json'), JSON.stringify(out, null, 2) + '\n')
 
-const count = encode.length + merge.length + converge.length + diff.length
+const count = encode.length + merge.length + converge.length + diff.length + incremental.length
 console.log(`wrote ${count} fixtures (yjs ${YJS_VERSION}) -> Tests/YSwiftTests/Fixtures/golden_v13_6_31.json`)

@@ -1,0 +1,12 @@
+{
+  "name": "yswift-golden-fixtures",
+  "private": true,
+  "type": "module",
+  "description": "Generates golden wire-format vectors from a pinned JS-Yjs for YSwift conformance tests.",
+  "scripts": {
+    "generate": "node generate.mjs"
+  },
+  "dependencies": {
+    "yjs": "13.6.31"
+  }
+}

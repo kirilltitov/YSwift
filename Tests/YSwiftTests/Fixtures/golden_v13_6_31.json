@@ -1,0 +1,203 @@
+{
+  "meta": {
+    "yjsVersion": "13.6.31",
+    "format": "v1",
+    "key": "content",
+    "generatedBy": "fixtures/generate.mjs"
+  },
+  "encode": [
+    {
+      "name": "empty",
+      "description": "new doc, no ops",
+      "clientID": 1001,
+      "ops": [],
+      "text": "",
+      "deltaJSON": "[]",
+      "stateVector": "AA==",
+      "update": "AAA="
+    },
+    {
+      "name": "ascii",
+      "description": "plain ascii insert",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "insert",
+          "index": 0,
+          "text": "Hello, world!"
+        }
+      ],
+      "text": "Hello, world!",
+      "deltaJSON": "[{\"insert\":\"Hello, world!\"}]",
+      "stateVector": "AekHDQ==",
+      "update": "AQHpBwAEAQdjb250ZW50DUhlbGxvLCB3b3JsZCEA"
+    },
+    {
+      "name": "unicode_surrogates",
+      "description": "astral chars: emoji + flag (UTF-16 surrogate pairs)",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "insert",
+          "index": 0,
+          "text": "a😀b🇺🇸c"
+        }
+      ],
+      "text": "a😀b🇺🇸c",
+      "deltaJSON": "[{\"insert\":\"a😀b🇺🇸c\"}]",
+      "stateVector": "AekHCQ==",
+      "update": "AQHpBwAEAQdjb250ZW50D2Hwn5iAYvCfh7rwn4e4YwA="
+    },
+    {
+      "name": "bold_range",
+      "description": "insert then bold a range",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "insert",
+          "index": 0,
+          "text": "Hello"
+        },
+        {
+          "op": "format",
+          "index": 0,
+          "length": 5,
+          "attributes": {
+            "bold": true
+          }
+        }
+      ],
+      "text": "Hello",
+      "deltaJSON": "[{\"insert\":\"Hello\",\"attributes\":{\"bold\":true}}]",
+      "stateVector": "AekHBw==",
+      "update": "AQPpBwAEAQdjb250ZW50BUhlbGxvRukHAARib2xkBHRydWWG6QcEBGJvbGQEbnVsbAA="
+    },
+    {
+      "name": "attributed_insert",
+      "description": "attributed then plain insert",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "insert",
+          "index": 0,
+          "text": "x",
+          "attributes": {
+            "bold": true
+          }
+        },
+        {
+          "op": "insert",
+          "index": 1,
+          "text": "y"
+        }
+      ],
+      "text": "xy",
+      "deltaJSON": "[{\"insert\":\"xy\",\"attributes\":{\"bold\":true}}]",
+      "stateVector": "AekHBA==",
+      "update": "AQTpBwAGAQdjb250ZW50BGJvbGQEdHJ1ZYTpBwABeIbpBwEEYm9sZARudWxsxOkHAekHAgF5AA=="
+    },
+    {
+      "name": "delete_middle",
+      "description": "insert then delete a middle range",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "insert",
+          "index": 0,
+          "text": "abcdef"
+        },
+        {
+          "op": "delete",
+          "index": 2,
+          "length": 2
+        }
+      ],
+      "text": "abef",
+      "deltaJSON": "[{\"insert\":\"abef\"}]",
+      "stateVector": "AekHBg==",
+      "update": "AQPpBwAEAQdjb250ZW50AmFigekHAQKE6QcDAmVmAekHAQIC"
+    },
+    {
+      "name": "mixed",
+      "description": "insert, italic range, delete head",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "insert",
+          "index": 0,
+          "text": "The quick brown fox"
+        },
+        {
+          "op": "format",
+          "index": 4,
+          "length": 5,
+          "attributes": {
+            "italic": true
+          }
+        },
+        {
+          "op": "delete",
+          "index": 0,
+          "length": 4
+        }
+      ],
+      "text": "quick brown fox",
+      "deltaJSON": "[{\"insert\":\"quick\",\"attributes\":{\"italic\":true}},{\"insert\":\" brown fox\"}]",
+      "stateVector": "AekHFQ==",
+      "update": "AQXpBwABAQdjb250ZW50BITpBwMFcXVpY2uE6QcICiBicm93biBmb3jG6QcD6QcEBml0YWxpYwR0cnVlxukHCOkHCQZpdGFsaWMEbnVsbAHpBwEABA=="
+    },
+    {
+      "name": "link",
+      "description": "insert with a link attribute (string value)",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "insert",
+          "index": 0,
+          "text": "site",
+          "attributes": {
+            "link": "https://example.com"
+          }
+        }
+      ],
+      "text": "site",
+      "deltaJSON": "[{\"insert\":\"site\",\"attributes\":{\"link\":\"https://example.com\"}}]",
+      "stateVector": "AekHBg==",
+      "update": "AQPpBwAGAQdjb250ZW50BGxpbmsVImh0dHBzOi8vZXhhbXBsZS5jb20ihOkHAARzaXRlhukHBARsaW5rBG51bGwA"
+    }
+  ],
+  "merge": [
+    {
+      "name": "merge_two_clients",
+      "description": "two clients, disjoint inserts, merged into one update",
+      "inputs": [
+        "AQEBAAQBB2NvbnRlbnQGSGVsbG8gAA==",
+        "AQECAAQBB2NvbnRlbnQFV29ybGQA"
+      ],
+      "merged": "AgECAAQBB2NvbnRlbnQFV29ybGQBAQAEAQdjb250ZW50BkhlbGxvIAA=",
+      "text": "Hello World"
+    }
+  ],
+  "converge": [
+    {
+      "name": "interleave_same_pos",
+      "description": "two clients insert at position 0 concurrently (YATA tie-break)",
+      "updates": [
+        "AQEBAAQBB2NvbnRlbnQDQUFBAA==",
+        "AQECAAQBB2NvbnRlbnQDQkJCAA=="
+      ],
+      "text": "AAABBB"
+    }
+  ],
+  "diff": [
+    {
+      "name": "diff_append",
+      "description": "diff (delta) after appending to an earlier state",
+      "clientID": 1001,
+      "sinceStateVector": "AekHBQ==",
+      "full": "AQHpBwAEAQdjb250ZW50DEhlbGxvLCB3b3JsZAA=",
+      "diff": "AQHpBwWE6QcEBywgd29ybGQA",
+      "text": "Hello, world"
+    }
+  ]
+}

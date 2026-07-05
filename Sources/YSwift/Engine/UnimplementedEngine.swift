@@ -4,9 +4,9 @@ import FoundationEssentials
 import Foundation
 #endif
 
-/// Builds the engine backing a new `YDoc`. Phase 1 will return `YrsEngine(gc:)`.
-func makeDefaultEngine(gc: Bool) -> any YEngine {
-    UnimplementedEngine(gc: gc)
+/// Builds the engine backing a new `YDoc`. Phase 1 will return `YrsEngine(...)`.
+func makeDefaultEngine(clientID: UInt64?, gc: Bool) -> any YEngine {
+    UnimplementedEngine(clientID: clientID, gc: gc)
 }
 
 /// Placeholder backend used while the public API is frozen but no real engine is
@@ -18,9 +18,9 @@ func makeDefaultEngine(gc: Bool) -> any YEngine {
 final class UnimplementedEngine: YEngine {
     let clientID: UInt64
 
-    init(gc: Bool) {
+    init(clientID: UInt64?, gc: Bool) {
         // Yjs client ids are 53-bit integers (JS safe-integer range).
-        self.clientID = UInt64.random(in: 0 ..< (UInt64(1) << 53))
+        self.clientID = clientID ?? UInt64.random(in: 0 ..< (UInt64(1) << 53))
     }
 
     func textHandle(_ name: String) -> TextHandle { TextHandle(name: name) }

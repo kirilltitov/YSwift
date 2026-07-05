@@ -19,8 +19,20 @@ public final class YDoc: Sendable {
     /// document (requirements §9.5). Both engines rely on this.
     private let sync = Mutex<Void>(())
 
+    /// Creates a document with a random 53-bit client id.
     public init(gc: Bool = true) {
-        let engine = makeDefaultEngine(gc: gc)
+        let engine = makeDefaultEngine(clientID: nil, gc: gc)
+        self.engine = engine
+        self.clientID = engine.clientID
+    }
+
+    /// Creates a document with an explicit client id.
+    ///
+    /// Yjs allows setting the client id directly; an explicit id makes encoding
+    /// deterministic (required for byte-exact conformance testing and useful for
+    /// stable server-assigned ids).
+    public init(clientID: UInt64, gc: Bool = true) {
+        let engine = makeDefaultEngine(clientID: clientID, gc: gc)
         self.engine = engine
         self.clientID = engine.clientID
     }

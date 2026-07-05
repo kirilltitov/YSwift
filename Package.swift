@@ -22,6 +22,9 @@ let package = Package(
         .testTarget(
             name: "YSwiftTests",
             dependencies: ["YSwift"],
+            resources: [
+                .copy("Fixtures"),
+            ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]

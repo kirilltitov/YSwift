@@ -10,6 +10,7 @@ typedef struct CYrsDoc CYrsDoc;
 typedef struct CYrsTxn CYrsTxn;
 typedef struct CYrsSubscription CYrsSubscription;
 typedef struct CYrsUndoManager CYrsUndoManager;
+typedef struct CYrsAwareness CYrsAwareness;
 
 /* --- Document --- */
 CYrsDoc *ydoc_new(uint64_t client_id, bool skip_gc);
@@ -63,6 +64,19 @@ bool yundo_can_undo(CYrsUndoManager *mgr);
 bool yundo_can_redo(CYrsUndoManager *mgr);
 void yundo_stop_capturing(CYrsUndoManager *mgr);
 void yundo_free(CYrsUndoManager *mgr);
+
+/* --- Awareness (ephemeral presence; y-protocols/awareness compatible) --- */
+typedef void (*YAwarenessCallback)(void *user_data, const uint64_t *added, size_t added_len, const uint64_t *updated, size_t updated_len, const uint64_t *removed, size_t removed_len);
+CYrsAwareness *ysync_awareness_new(CYrsDoc *doc);
+void ysync_awareness_free(CYrsAwareness *aw);
+uint64_t ysync_awareness_client_id(CYrsAwareness *aw);
+void ysync_set_local_state(CYrsAwareness *aw, const uint8_t *json, size_t json_len);
+void ysync_clean_local_state(CYrsAwareness *aw);
+void ysync_remove_state(CYrsAwareness *aw, uint64_t client_id);
+uint8_t *ysync_states(CYrsAwareness *aw, size_t *out_len);
+uint8_t *ysync_encode_update(CYrsAwareness *aw, size_t *out_len);
+bool ysync_apply_update(CYrsAwareness *aw, const uint8_t *update, size_t len);
+CYrsSubscription *ysync_on_change(CYrsAwareness *aw, YAwarenessCallback cb, void *user_data);
 
 /* --- Memory: release any uint8_t* buffer returned above --- */
 void ybytes_free(uint8_t *ptr, size_t len);

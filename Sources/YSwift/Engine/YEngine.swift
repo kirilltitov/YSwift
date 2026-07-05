@@ -50,6 +50,15 @@ protocol YEngine: AnyObject, Sendable {
     func undoManagerCanRedo(_ mgr: AnyObject) -> Bool
     func undoManagerStopCapturing(_ mgr: AnyObject)
 
+    func makeAwareness() -> AnyObject?
+    func awarenessSetLocalState(_ aw: AnyObject, json: Data)
+    func awarenessCleanLocalState(_ aw: AnyObject)
+    func awarenessRemoveState(_ aw: AnyObject, client: UInt64)
+    func awarenessStates(_ aw: AnyObject) -> Data
+    func awarenessEncodeUpdate(_ aw: AnyObject) -> Data
+    func awarenessApplyUpdate(_ aw: AnyObject, _ update: Data) -> Bool
+    func awarenessOnChange(_ aw: AnyObject, _ callback: @escaping @Sendable (Awareness.Change) -> Void) -> YSubscription
+
     func onUpdate(_ callback: @escaping @Sendable (Data, Origin?) -> Void) -> YSubscription
     func observeText(_ handle: TextHandle, _ callback: @escaping @Sendable (YTextEvent) -> Void) -> YSubscription
 

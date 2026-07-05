@@ -22,6 +22,7 @@ use std::ffi::c_void;
 use std::sync::Arc;
 use yrs::types::text::YChange;
 use yrs::types::Attrs;
+use yrs::sync::{Awareness, AwarenessUpdate};
 use yrs::undo::{Options as UndoOptions, UndoManager};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
@@ -431,6 +432,104 @@ pub unsafe extern "C" fn ysticky_to_index(
         },
         Err(_) => -1,
     }
+}
+
+// ---- Awareness (ephemeral presence; y-protocols/awareness compatible) -------
+// Awareness methods take &mut / rely on interior state; the Swift side serializes
+// all calls to a given awareness with its own lock.
+
+#[no_mangle]
+pub unsafe extern "C" fn ysync_awareness_new(doc: *mut Doc) -> *mut Awareness {
+    Box::into_raw(Box::new(Awareness::new((*doc).clone())))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ysync_awareness_free(aw: *mut Awareness) {
+    if !aw.is_null() {
+        drop(Box::from_raw(aw));
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ysync_awareness_client_id(aw: *mut Awareness) -> u64 {
+    (*aw).client_id().get()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ysync_set_local_state(aw: *mut Awareness, json: *const u8, json_len: usize) {
+    (*aw).set_local_state_raw(as_str(json, json_len));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ysync_clean_local_state(aw: *mut Awareness) {
+    (*aw).clean_local_state();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ysync_remove_state(aw: *mut Awareness, client_id: u64) {
+    (*aw).remove_state(ClientID::new(client_id));
+}
+
+/// All known client states as a JSON object `{ "<clientId>": <state>, .. }`.
+#[no_mangle]
+pub unsafe extern "C" fn ysync_states(aw: *mut Awareness, out_len: *mut usize) -> *mut u8 {
+    let aw = &*aw;
+    let ids: Vec<_> = aw.iter().map(|(id, _)| id).collect();
+    let mut map = serde_json::Map::new();
+    for id in ids {
+        if let Some(val) = aw.state::<Value>(id) {
+            map.insert(id.get().to_string(), val);
+        }
+    }
+    bytes_out(serde_json::to_vec(&Value::Object(map)).unwrap_or_default(), out_len)
+}
+
+/// Encodes an awareness update for all known clients (y-protocols v1).
+#[no_mangle]
+pub unsafe extern "C" fn ysync_encode_update(aw: *mut Awareness, out_len: *mut usize) -> *mut u8 {
+    match (*aw).update() {
+        Ok(update) => bytes_out(update.encode_v1(), out_len),
+        Err(_) => {
+            *out_len = 0;
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ysync_apply_update(aw: *mut Awareness, update: *const u8, len: usize) -> bool {
+    match AwarenessUpdate::decode_v1(as_slice(update, len)) {
+        Ok(update) => (*aw).apply_update(update).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// C callback: (user_data, added*, added_len, updated*, updated_len, removed*, removed_len).
+pub type YAwarenessCallback =
+    extern "C" fn(*mut c_void, *const u64, usize, *const u64, usize, *const u64, usize);
+
+#[no_mangle]
+pub unsafe extern "C" fn ysync_on_change(
+    aw: *mut Awareness,
+    cb: YAwarenessCallback,
+    user_data: *mut c_void,
+) -> *mut Subscription {
+    let ud = user_data as usize;
+    let sub = (*aw).on_change(move |_aw, e, _origin| {
+        let added: Vec<u64> = e.added().iter().map(|c| c.get()).collect();
+        let updated: Vec<u64> = e.updated().iter().map(|c| c.get()).collect();
+        let removed: Vec<u64> = e.removed().iter().map(|c| c.get()).collect();
+        cb(
+            ud as *mut c_void,
+            added.as_ptr(),
+            added.len(),
+            updated.as_ptr(),
+            updated.len(),
+            removed.as_ptr(),
+            removed.len(),
+        );
+    });
+    Box::into_raw(Box::new(sub))
 }
 
 // ---- Undo manager -----------------------------------------------------------

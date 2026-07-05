@@ -1,4 +1,5 @@
 import Testing
+import Synchronization
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -38,5 +39,40 @@ struct EngineBehaviorTests {
         #expect(!undo.canUndo)
         undo.undo() // no-op
         #expect(doc.transact { txn in text.string(txn) } == "x")
+    }
+
+    @Test("Awareness syncs local state between peers")
+    func awarenessSync() {
+        let docA = YDoc(clientID: 1)
+        let awA = Awareness(docA)
+        awA.setLocalStateField("name", "Alice")
+        awA.setLocalStateField("color", "#f00")
+
+        let update = awA.encodeUpdate()
+        #expect(!update.isEmpty)
+
+        let docB = YDoc(clientID: 2)
+        let awB = Awareness(docB)
+        awB.applyUpdate(update)
+
+        let states = awB.states()
+        #expect(states[docA.clientID]?["name"] == .string("Alice"))
+        #expect(states[docA.clientID]?["color"] == .string("#f00"))
+    }
+
+    @Test("Awareness onChange reports newly-added clients")
+    func awarenessOnChange() {
+        let docB = YDoc(clientID: 2)
+        let awB = Awareness(docB)
+        let added = Mutex<[UInt64]>([])
+        let sub = awB.onChange { change in added.withLock { $0.append(contentsOf: change.added) } }
+
+        let docA = YDoc(clientID: 1)
+        let awA = Awareness(docA)
+        awA.setLocalStateField("x", 1)
+        awB.applyUpdate(awA.encodeUpdate())
+        sub.cancel()
+
+        #expect(added.withLock { $0 }.contains(1))
     }
 }

@@ -27,6 +27,19 @@ final class RawUndoManager {
     deinit { yundo_free(ptr) }
 }
 
+/// Owns a yrs `Awareness` pointer; frees it on release.
+final class RawAwareness: @unchecked Sendable {
+    let ptr: OpaquePointer
+    init(_ ptr: OpaquePointer) { self.ptr = ptr }
+    deinit { ysync_awareness_free(ptr) }
+}
+
+/// Holds an awareness-change callback for the C trampoline.
+final class AwarenessChangeBox {
+    let callback: @Sendable (Awareness.Change) -> Void
+    init(_ callback: @escaping @Sendable (Awareness.Change) -> Void) { self.callback = callback }
+}
+
 /// Holds a Swift update callback so the C trampoline can reach it via a `void*`.
 final class UpdateCallbackBox {
     let callback: @Sendable (Data, Origin?) -> Void
@@ -59,6 +72,25 @@ private func yrsUpdateTrampoline(
         origin = nil
     }
     box.callback(update, origin)
+}
+
+/// C trampoline for `ysync_on_change`: rebuilds the change lists and invokes the callback.
+private func awarenessTrampoline(
+    _ userData: UnsafeMutableRawPointer?,
+    _ addedPtr: UnsafePointer<UInt64>?, _ addedLen: Int,
+    _ updatedPtr: UnsafePointer<UInt64>?, _ updatedLen: Int,
+    _ removedPtr: UnsafePointer<UInt64>?, _ removedLen: Int
+) {
+    guard let userData else { return }
+    let box = Unmanaged<AwarenessChangeBox>.fromOpaque(userData).takeUnretainedValue()
+    func ids(_ p: UnsafePointer<UInt64>?, _ n: Int) -> [UInt64] {
+        (n > 0 && p != nil) ? Array(UnsafeBufferPointer(start: p!, count: n)) : []
+    }
+    box.callback(Awareness.Change(
+        added: ids(addedPtr, addedLen),
+        updated: ids(updatedPtr, updatedLen),
+        removed: ids(removedPtr, removedLen)
+    ))
 }
 
 /// Phase-1 engine: a facade over the Rust `yrs` CRDT via the `cyrs` C ABI.
@@ -248,6 +280,55 @@ final class YrsEngine: YEngine, @unchecked Sendable {
     func undoManagerCanUndo(_ mgr: AnyObject) -> Bool { (mgr as? RawUndoManager).map { yundo_can_undo($0.ptr) } ?? false }
     func undoManagerCanRedo(_ mgr: AnyObject) -> Bool { (mgr as? RawUndoManager).map { yundo_can_redo($0.ptr) } ?? false }
     func undoManagerStopCapturing(_ mgr: AnyObject) { _ = (mgr as? RawUndoManager).map { yundo_stop_capturing($0.ptr) } }
+
+    // MARK: Awareness
+
+    private func awPtr(_ aw: AnyObject) -> OpaquePointer? { (aw as? RawAwareness)?.ptr }
+
+    func makeAwareness() -> AnyObject? { ysync_awareness_new(doc).map { RawAwareness($0) } }
+
+    func awarenessSetLocalState(_ aw: AnyObject, json: Data) {
+        guard let p = awPtr(aw) else { return }
+        let bytes = Array(json)
+        bytes.withUnsafeBufferPointer { ysync_set_local_state(p, $0.baseAddress, $0.count) }
+    }
+
+    func awarenessCleanLocalState(_ aw: AnyObject) { if let p = awPtr(aw) { ysync_clean_local_state(p) } }
+
+    func awarenessRemoveState(_ aw: AnyObject, client: UInt64) { if let p = awPtr(aw) { ysync_remove_state(p, client) } }
+
+    func awarenessStates(_ aw: AnyObject) -> Data {
+        guard let p = awPtr(aw) else { return Data() }
+        var outLen = 0
+        return consumeBytes(ysync_states(p, &outLen), outLen)
+    }
+
+    func awarenessEncodeUpdate(_ aw: AnyObject) -> Data {
+        guard let p = awPtr(aw) else { return Data() }
+        var outLen = 0
+        return consumeBytes(ysync_encode_update(p, &outLen), outLen)
+    }
+
+    func awarenessApplyUpdate(_ aw: AnyObject, _ update: Data) -> Bool {
+        guard let p = awPtr(aw) else { return false }
+        let bytes = Array(update)
+        return bytes.withUnsafeBufferPointer { ysync_apply_update(p, $0.baseAddress, $0.count) }
+    }
+
+    func awarenessOnChange(_ aw: AnyObject, _ callback: @escaping @Sendable (Awareness.Change) -> Void) -> YSubscription {
+        guard let p = awPtr(aw) else { return YSubscription {} }
+        let box = AwarenessChangeBox(callback)
+        let userData = Unmanaged.passRetained(box).toOpaque()
+        guard let sub = ysync_on_change(p, awarenessTrampoline, userData) else {
+            Unmanaged<AwarenessChangeBox>.fromOpaque(userData).release()
+            return YSubscription {}
+        }
+        let handles = SubHandles(sub: sub, userData: userData)
+        return YSubscription {
+            ysubscription_free(handles.sub)
+            Unmanaged<AwarenessChangeBox>.fromOpaque(handles.userData).release()
+        }
+    }
 
     // MARK: Observers
 

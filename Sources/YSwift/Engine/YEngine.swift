@@ -55,7 +55,7 @@ protocol YEngine: AnyObject, Sendable {
     func awarenessCleanLocalState(_ aw: AnyObject)
     func awarenessRemoveState(_ aw: AnyObject, client: UInt64)
     func awarenessStates(_ aw: AnyObject) -> Data
-    func awarenessEncodeUpdate(_ aw: AnyObject) -> Data
+    func awarenessEncodeUpdate(_ aw: AnyObject, clients: [UInt64]?) -> Data
     func awarenessApplyUpdate(_ aw: AnyObject, _ update: Data) -> Bool
     func awarenessOnChange(_ aw: AnyObject, _ callback: @escaping @Sendable (Awareness.Change) -> Void) -> YSubscription
 

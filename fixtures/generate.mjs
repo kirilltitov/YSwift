@@ -132,6 +132,17 @@ function stickyFixture(name, description, clientID, baseOps, index, assoc, shift
   }
 }
 
+/** Semantically-equivalent-but-not-byte-exact scenarios (e.g. multi-attribute format). */
+function semanticFixture(name, description, clientID, ops) {
+  const { doc, t } = docWith(clientID, ops)
+  return {
+    name, description, clientID, ops,
+    update: b64(Y.encodeStateAsUpdate(doc)),
+    text: t.toString(),
+    deltaJSON: JSON.stringify(t.toDelta()),
+  }
+}
+
 const encode = [
   encodeFixture('empty', 'new doc, no ops', 1001, []),
   encodeFixture('ascii', 'plain ascii insert', 1001,
@@ -193,9 +204,18 @@ const sticky = [
     [{ op: 'insert', index: 0, text: 'world' }], 2, -1, [{ op: 'insert', index: 0, text: '!' }]),
 ]
 
+const semantic = [
+  semanticFixture(
+    'multi_attr_format',
+    'multi-attribute format: yrs writes the independent per-attribute structs in HashMap order, differing from yjs insertion order — semantically identical (converges) but not byte-identical',
+    1001,
+    [{ op: 'insert', index: 0, text: 'text' }, { op: 'format', index: 0, length: 4, attributes: { bold: true, italic: true } }]
+  ),
+]
+
 const out = {
   meta: { yjsVersion: YJS_VERSION, format: 'v1', key: KEY, generatedBy: 'fixtures/generate.mjs' },
-  encode, merge, converge, diff, incremental, sticky,
+  encode, merge, converge, diff, incremental, sticky, semantic,
 }
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -203,5 +223,5 @@ const dest = join(here, '..', 'Tests', 'YSwiftTests', 'Fixtures')
 mkdirSync(dest, { recursive: true })
 writeFileSync(join(dest, 'golden_v13_6_31.json'), JSON.stringify(out, null, 2) + '\n')
 
-const count = encode.length + merge.length + converge.length + diff.length + incremental.length + sticky.length
+const count = encode.length + merge.length + converge.length + diff.length + incremental.length + sticky.length + semantic.length
 console.log(`wrote ${count} fixtures (yjs ${YJS_VERSION}) -> Tests/YSwiftTests/Fixtures/golden_v13_6_31.json`)

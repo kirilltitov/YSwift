@@ -343,5 +343,31 @@
       "resolvedAfter": 3,
       "finalText": "!world"
     }
+  ],
+  "semantic": [
+    {
+      "name": "multi_attr_format",
+      "description": "multi-attribute format: yrs writes the independent per-attribute structs in HashMap order, differing from yjs insertion order — semantically identical (converges) but not byte-identical",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "insert",
+          "index": 0,
+          "text": "text"
+        },
+        {
+          "op": "format",
+          "index": 0,
+          "length": 4,
+          "attributes": {
+            "bold": true,
+            "italic": true
+          }
+        }
+      ],
+      "update": "AQXpBwAEAQdjb250ZW50BHRleHRG6QcABGJvbGQEdHJ1ZcbpBwTpBwAGaXRhbGljBHRydWWG6QcDBGJvbGQEbnVsbIbpBwYGaXRhbGljBG51bGwA",
+      "text": "text",
+      "deltaJSON": "[{\"insert\":\"text\",\"attributes\":{\"bold\":true,\"italic\":true}}]"
+    }
   ]
 }

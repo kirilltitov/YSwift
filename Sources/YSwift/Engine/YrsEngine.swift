@@ -318,9 +318,13 @@ final class YrsEngine: YEngine, @unchecked Sendable {
         return consumeBytes(ysync_states(p, &outLen), outLen)
     }
 
-    func awarenessEncodeUpdate(_ aw: AnyObject) -> Data {
+    func awarenessEncodeUpdate(_ aw: AnyObject, clients: [UInt64]?) -> Data {
         guard let p = awPtr(aw) else { return Data() }
         var outLen = 0
+        if let clients {
+            let ptr = clients.withUnsafeBufferPointer { ysync_encode_update_clients(p, $0.baseAddress, $0.count, &outLen) }
+            return consumeBytes(ptr, outLen)
+        }
         return consumeBytes(ysync_encode_update(p, &outLen), outLen)
     }
 

@@ -94,4 +94,25 @@ struct EngineBehaviorTests {
         #expect(deltas.first == [.retain(5, attributes: nil), .insert(.string(" world"), attributes: nil)])
         #expect(deltas.last == [.delete(1)])
     }
+
+    @Test("Awareness.encodeUpdate(clients:) restricts the update to the given clients")
+    func awarenessEncodeSubset() {
+        let docA = YDoc(clientID: 1)
+        let awA = Awareness(docA)
+        awA.setLocalStateField("n", "A")
+
+        let docB = YDoc(clientID: 2)
+        let awB = Awareness(docB)
+        awB.setLocalStateField("n", "B")
+        awB.applyUpdate(awA.encodeUpdate()) // awB now knows clients 1 and 2
+
+        let subset = awB.encodeUpdate(clients: [1]) // only client 1
+        let docC = YDoc(clientID: 3)
+        let awC = Awareness(docC)
+        awC.applyUpdate(subset)
+
+        let states = awC.states()
+        #expect(states[1]?["n"] == .string("A"))
+        #expect(states[2] == nil)
+    }
 }

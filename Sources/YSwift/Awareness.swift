@@ -65,11 +65,11 @@ public final class Awareness {
         return doc.engine.awarenessOnChange(handle, callback)
     }
 
-    /// Encodes an awareness update (currently for all known clients; the
-    /// `clients` filter is reserved for a follow-up).
+    /// Encodes an awareness update. Pass `clients` to restrict it to specific
+    /// clients; otherwise all known clients are included.
     public func encodeUpdate(clients: [UInt64]? = nil) -> Data {
         guard let handle else { return Data() }
-        return doc.engine.awarenessEncodeUpdate(handle)
+        return doc.engine.awarenessEncodeUpdate(handle, clients: clients)
     }
 
     /// Applies a remote awareness update.

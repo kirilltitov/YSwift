@@ -8,9 +8,11 @@ is a frozen contract across Phase 1 (Yrs facade) and Phase 2 (native Swift).
 
 - **Wire format: v1.** Broadest compatibility; `bytea` in `crdt_update` is v1.
   Do not mix v1/v2 (requirements §9.2).
-- **Phase-1 FFI mechanism: `yffi` C ABI + module map.** Cleanest for a Linux
-  backend; UniFFI (`yswift`) is Apple-only/stale, `swift-bridge` adds tooling.
-  A `CYrs` `systemLibrary` target will expose `libyrs.h`; `YrsEngine` wraps it.
+- **Phase-1 backend: an in-repo `cyrs` C-ABI crate over `yrs` 0.27.2** (built with
+  the `sync` feature for a `Send`/`Sync` `Doc`, and `OffsetKind::Utf16` for yjs
+  byte-compat). Chosen over yffi/UniFFI/swift-bridge for a minimal, controllable
+  surface. The `CYrs` `systemLibrary` target exposes a hand-written `cyrs.h`;
+  `YrsEngine` links `libcyrs.a` (on Linux also `-lpthread -ldl -lm`).
 - **Primary target: server (Linux).** Apple platforms supported as a bonus
   (`.macOS(.v15)`, `.iOS(.v18)` for `Synchronization.Mutex`).
 - **`Y.Array` for child reorder: not now** (requirements §8 / §11) — the block
@@ -35,12 +37,32 @@ is a frozen contract across Phase 1 (Yrs facade) and Phase 2 (native Swift).
 - The API is **synchronous** and transaction-scoped (`doc.transact { txn in … }`),
   mirroring Yjs/Yrs. `YTransaction` is **not** `Sendable` and must not escape the
   `transact` closure.
-- Update/awareness observer callbacks are `@Sendable` and are fired **outside**
-  the transaction lock to avoid reentrancy/echo loops (requirements §9.3).
+- Observer callbacks (`onUpdate` / `text.observe` / awareness `onChange`) are
+  `@Sendable` and fire **synchronously during commit**, carrying the transaction
+  origin for echo-loop avoidance (§9.3). They must not re-enter the document
+  (no `transact` inside a callback).
 
-## Still open (confirm before Phase 1 wiring)
+## Pinned versions (verified)
 
-- Whether native Apple clients (iOS/macOS) also consume the port, which would
-  raise the priority of API ergonomics there (requirements §11).
-- Exact `yrs`/`yffi` version to pin so its v1 format matches the JS-Yjs version
-  used by clients — must be verified empirically with golden vectors, not assumed.
+- **yjs `13.6.31`** (golden-vector source) ↔ **yrs `0.27.2`** (`Cargo.lock`).
+  Byte-for-byte v1 compatibility verified on macOS and Linux (Swift 6.3.3).
+
+## Known limitations (Phase 1 / yrs backend)
+
+- **Multi-attribute `format` byte order.** yrs holds a range's attributes in a
+  `HashMap`, so the independent per-attribute format structs serialize in a
+  different order than yjs (which uses object insertion order). The result is
+  **semantically identical and converges** — yjs applies our updates and vice
+  versa — but the raw bytes differ from yjs for a *single* `format` call carrying
+  *multiple* attributes. Single-attribute formats are byte-identical. A native
+  Phase-2 engine can preserve order. (Characterized by the `semantic` fixture.)
+- `UndoManager` and `Awareness` are **not `Sendable`** (single-context helpers);
+  wrap in an actor if shared across connections. Their raw handles free on
+  release, which must not race the document's edit path.
+- `YSwift.UndoManager` shadows `Foundation.UndoManager` — qualify when both are
+  imported.
+
+## Still open
+
+- Whether native Apple clients (iOS/macOS) also consume the port (requirements
+  §11) — affects how much Apple-platform API ergonomics matter.

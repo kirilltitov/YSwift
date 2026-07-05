@@ -73,6 +73,16 @@ struct GoldenSuite: Codable {
         let finalText: String
     }
 
+    struct SemanticFixture: Codable {
+        let name: String
+        let description: String
+        let clientID: UInt64
+        let ops: [GoldenOp]
+        let update: String
+        let text: String
+        let deltaJSON: String
+    }
+
     let meta: Meta
     let encode: [EncodeFixture]
     let merge: [MergeFixture]
@@ -80,6 +90,7 @@ struct GoldenSuite: Codable {
     let diff: [DiffFixture]
     let incremental: [IncrementalFixture]
     let sticky: [StickyFixture]
+    let semantic: [SemanticFixture]
 }
 
 struct GoldenOp: Codable {
@@ -327,6 +338,29 @@ struct GoldenVectorTests {
 
             doc.transact { txn in Golden.replay(f.shiftOps, into: text, txn) }
             #expect(doc.transact { txn in sticky.toIndex(txn, doc) } == f.resolvedAfter, "\(f.name): resolvedAfter")
+        }
+    }
+
+    // Semantically-equivalent cases where the port does NOT reproduce yjs's exact
+    // bytes (e.g. multi-attribute format struct order) but interoperates and
+    // converges. We verify decode + structural delta, not byte-equality.
+    @Test("semantic: yjs updates decode and render correctly (byte order may differ)")
+    func semanticInterop() throws {
+        let suite = try Golden.loadSuite()
+        for f in suite.semantic {
+            // yjs's update applies in the port -> same text + same delta (structurally).
+            let update = try #require(Data(base64Encoded: f.update))
+            let fromJS = YDoc(clientID: 9)
+            fromJS.transact { txn in fromJS.applyUpdate(txn, update) }
+            let expected = try Golden.parseDelta(f.deltaJSON)
+            #expect(fromJS.transact { txn in fromJS.text(suite.meta.key).string(txn) } == f.text, "\(f.name): text")
+            #expect(fromJS.transact { txn in fromJS.text(suite.meta.key).toDelta(txn) } == expected, "\(f.name): delta (JS update)")
+
+            // The port replaying the same ops yields a structurally-equal delta.
+            let native = YDoc(clientID: f.clientID)
+            let text = native.text(suite.meta.key)
+            native.transact { txn in Golden.replay(f.ops, into: text, txn) }
+            #expect(native.transact { txn in text.toDelta(txn) } == expected, "\(f.name): delta (native)")
         }
     }
 }

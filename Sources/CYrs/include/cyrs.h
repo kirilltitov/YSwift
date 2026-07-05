@@ -79,6 +79,7 @@ void ysync_clean_local_state(CYrsAwareness *aw);
 void ysync_remove_state(CYrsAwareness *aw, uint64_t client_id);
 uint8_t *ysync_states(CYrsAwareness *aw, size_t *out_len);
 uint8_t *ysync_encode_update(CYrsAwareness *aw, size_t *out_len);
+uint8_t *ysync_encode_update_clients(CYrsAwareness *aw, const uint64_t *clients, size_t clients_len, size_t *out_len);
 bool ysync_apply_update(CYrsAwareness *aw, const uint8_t *update, size_t len);
 CYrsSubscription *ysync_on_change(CYrsAwareness *aw, YAwarenessCallback cb, void *user_data);
 

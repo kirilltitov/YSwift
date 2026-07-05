@@ -555,6 +555,31 @@ pub unsafe extern "C" fn ysync_encode_update(aw: *mut Awareness, out_len: *mut u
     }
 }
 
+/// Encodes an awareness update restricted to the given client ids.
+#[no_mangle]
+pub unsafe extern "C" fn ysync_encode_update_clients(
+    aw: *mut Awareness,
+    clients: *const u64,
+    clients_len: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
+    let ids: Vec<ClientID> = if clients.is_null() || clients_len == 0 {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(clients, clients_len)
+            .iter()
+            .map(|&c| ClientID::new(c))
+            .collect()
+    };
+    match (*aw).update_with_clients(ids) {
+        Ok(update) => bytes_out(update.encode_v1(), out_len),
+        Err(_) => {
+            *out_len = 0;
+            std::ptr::null_mut()
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn ysync_apply_update(aw: *mut Awareness, update: *const u8, len: usize) -> bool {
     match AwarenessUpdate::decode_v1(as_slice(update, len)) {

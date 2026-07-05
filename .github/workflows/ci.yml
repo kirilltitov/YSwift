@@ -13,6 +13,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install build prerequisites
+        # The swift image ships neither curl nor a C toolchain (cc), which the
+        # Rust toolchain and its linking step both need.
+        run: apt-get update && apt-get install -y curl build-essential
+
       - name: Install Rust toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable

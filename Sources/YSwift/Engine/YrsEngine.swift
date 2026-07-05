@@ -390,10 +390,9 @@ final class YrsEngine: YEngine, @unchecked Sendable {
     }
 
     private func attributesJSON(_ attrs: Attributes) -> [UInt8] {
-        let object = attrs.mapValues(\.foundationJSON)
-        guard let data = try? JSONSerialization.data(withJSONObject: object) else {
-            return Array("{}".utf8)
-        }
+        // JSONEncoder (via YValue: Codable) lives in FoundationEssentials, so this
+        // stays cross-platform and free of Objective-C-legacy APIs.
+        guard let data = try? JSONEncoder().encode(attrs) else { return Array("{}".utf8) }
         return Array(data)
     }
 }
@@ -411,21 +410,5 @@ private struct DeltaOpDTO: Decodable {
         if let retain { return .retain(retain, attributes: attributes) }
         if let delete { return .delete(delete) }
         return nil
-    }
-}
-
-private extension YValue {
-    /// A `JSONSerialization`-compatible representation, for FFI attribute transport.
-    var foundationJSON: Any {
-        switch self {
-        case .null, .undefined: NSNull()
-        case .bool(let b): b
-        case .int(let i): i
-        case .double(let d): d
-        case .string(let s): s
-        case .data(let d): d.base64EncodedString()
-        case .array(let a): a.map(\.foundationJSON)
-        case .object(let o): o.mapValues(\.foundationJSON)
-        }
     }
 }

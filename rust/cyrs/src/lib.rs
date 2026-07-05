@@ -20,12 +20,13 @@
 use serde_json::Value;
 use std::ffi::c_void;
 use std::sync::Arc;
+use yrs::types::text::YChange;
 use yrs::types::Attrs;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
-    Any, ClientID, Doc, GetString, OffsetKind, Options, Origin, ReadTxn, StateVector, Subscription,
-    Text, Transact, TransactionMut, Update, UpdateEvent, WriteTxn,
+    Any, ClientID, Doc, GetString, OffsetKind, Options, Origin, Out, ReadTxn, StateVector,
+    Subscription, Text, Transact, TransactionMut, Update, UpdateEvent, WriteTxn,
 };
 
 pub const CYRS_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -69,6 +70,20 @@ fn attrs_from_json(bytes: &[u8]) -> Attrs {
         attrs.insert(Arc::from(k.as_str()), any);
     }
     attrs
+}
+
+/// Converts a yrs `Any` into a serde_json `Value` for delta serialization.
+fn any_to_value(a: &Any) -> Value {
+    match a {
+        Any::Null | Any::Undefined => Value::Null,
+        Any::Bool(b) => Value::Bool(*b),
+        Any::Number(n) => serde_json::Number::from_f64(*n).map(Value::Number).unwrap_or(Value::Null),
+        Any::BigInt(i) => Value::Number((*i).into()),
+        Any::String(s) => Value::String(s.to_string()),
+        Any::Buffer(_) => Value::Null, // binary embeds are out of scope for text materialization
+        Any::Array(arr) => Value::Array(arr.iter().map(any_to_value).collect()),
+        Any::Map(m) => Value::Object(m.iter().map(|(k, v)| (k.clone(), any_to_value(v))).collect()),
+    }
 }
 
 // ---- Doc --------------------------------------------------------------------
@@ -193,6 +208,37 @@ pub unsafe extern "C" fn ytext_len(
     let txn = &mut *txn;
     let text = txn.get_or_insert_text(as_str(name, name_len));
     text.len(&*txn)
+}
+
+/// Returns the text content as a Yjs-style delta, serialized as a JSON array of
+/// `{ "insert": <value>, "attributes"?: {..} }` ops (UTF-8). Free with ybytes_free.
+#[no_mangle]
+pub unsafe extern "C" fn ytext_delta(
+    txn: *mut TransactionMut<'static>,
+    name: *const u8,
+    name_len: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
+    let txn = &mut *txn;
+    let text = txn.get_or_insert_text(as_str(name, name_len));
+    let mut ops: Vec<Value> = Vec::new();
+    for d in text.diff(&*txn, YChange::identity) {
+        let insert = match &d.insert {
+            Out::Any(a) => any_to_value(a),
+            _ => Value::Null, // shared-type embeds: out of scope for text materialization
+        };
+        let mut op = serde_json::Map::new();
+        op.insert("insert".to_string(), insert);
+        if let Some(attrs) = &d.attributes {
+            let mut m = serde_json::Map::new();
+            for (k, v) in attrs.iter() {
+                m.insert(k.to_string(), any_to_value(v));
+            }
+            op.insert("attributes".to_string(), Value::Object(m));
+        }
+        ops.push(Value::Object(op));
+    }
+    bytes_out(serde_json::to_vec(&Value::Array(ops)).unwrap_or_default(), out_len)
 }
 
 // ---- Encoding & sync (v1) ---------------------------------------------------

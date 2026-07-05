@@ -29,6 +29,8 @@ void ytext_remove(CYrsTxn *txn, const uint8_t *name, size_t name_len, uint32_t i
 void ytext_format(CYrsTxn *txn, const uint8_t *name, size_t name_len, uint32_t index, uint32_t len, const uint8_t *attrs, size_t attrs_len);
 uint8_t *ytext_string(CYrsTxn *txn, const uint8_t *name, size_t name_len, size_t *out_len);
 uint32_t ytext_len(CYrsTxn *txn, const uint8_t *name, size_t name_len);
+/* Delta as a JSON array of { "insert": <value>, "attributes"?: {..} } ops. */
+uint8_t *ytext_delta(CYrsTxn *txn, const uint8_t *name, size_t name_len, size_t *out_len);
 
 /* --- Encoding & sync (v1) --- */
 uint8_t *ytxn_state_as_update_v1(CYrsTxn *txn, const uint8_t *sv, size_t sv_len, size_t *out_len);

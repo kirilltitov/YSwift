@@ -158,7 +158,13 @@ final class YrsEngine: YEngine, @unchecked Sendable {
     }
 
     func textDelta(in txn: YTransaction, _ handle: TextHandle) -> [Delta] {
-        fatalError("YrsEngine.textDelta is not wired yet (needs diff-based FFI); tracked for Phase 1 follow-up.")
+        guard let t = txnPtr(txn) else { return [] }
+        let name = Array(handle.name.utf8)
+        var outLen = 0
+        let ptr = name.withUnsafeBufferPointer { n in ytext_delta(t, n.baseAddress, n.count, &outLen) }
+        let data = consumeBytes(ptr, outLen)
+        guard let ops = try? JSONDecoder().decode([DeltaInsertDTO].self, from: data) else { return [] }
+        return ops.compactMap { op in op.insert.map { .insert($0, attributes: op.attributes) } }
     }
 
     // MARK: Encoding & sync
@@ -232,6 +238,12 @@ final class YrsEngine: YEngine, @unchecked Sendable {
         }
         return Array(data)
     }
+}
+
+/// Wire shape of one `toDelta` op (insert-only, as Yjs toDelta produces).
+private struct DeltaInsertDTO: Decodable {
+    let insert: YValue?
+    let attributes: [String: YValue]?
 }
 
 private extension YValue {

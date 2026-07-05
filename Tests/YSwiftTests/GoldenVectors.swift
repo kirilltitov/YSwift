@@ -145,6 +145,13 @@ enum Golden {
             }
         }
     }
+
+    /// Parses a Yjs `toDelta` JSON string into `[Delta]` (insert ops only).
+    static func parseDelta(_ json: String) throws -> [Delta] {
+        struct Op: Decodable { let insert: YValue?; let attributes: [String: YValue]? }
+        let ops = try JSONDecoder().decode([Op].self, from: Data(json.utf8))
+        return ops.compactMap { op in op.insert.map { .insert($0, attributes: op.attributes) } }
+    }
 }
 
 // MARK: - Tests
@@ -245,5 +252,18 @@ struct GoldenVectorTests {
         doc.transact { txn in text.insert(txn, at: 1, "b") }
         sub.cancel()
         #expect(seen.withLock { $0 } == ["local", nil])
+    }
+
+    @Test("toDelta matches yjs toDelta structurally")
+    func toDeltaConformance() throws {
+        let suite = try Golden.loadSuite()
+        for f in suite.encode where !f.ops.isEmpty {
+            let doc = YDoc(clientID: f.clientID)
+            let text = doc.text(suite.meta.key)
+            doc.transact { txn in Golden.replay(f.ops, into: text, txn) }
+            let mine = doc.transact { txn in text.toDelta(txn) }
+            let expected = try Golden.parseDelta(f.deltaJSON)
+            #expect(mine == expected, "\(f.name): toDelta differs\n  mine=\(mine)\n  exp=\(expected)")
+        }
     }
 }

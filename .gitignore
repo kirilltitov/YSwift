@@ -1,0 +1,66 @@
+# ---- macOS ----
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# ---- Swift / SwiftPM ----
+.build/
+.swiftpm/
+Packages/
+*.xcodeproj
+*.playground
+.netrc
+
+# ---- Xcode ----
+xcuserdata/
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+build/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# ---- Rust / yffi build (Phase 1) ----
+target/
+**/*.rs.bk
+*.pdb
+
+# ---- Node / fixtures generator ----
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.npm/
+
+# ---- Editors ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.iml
+
+# ---- Env / misc ----
+.env
+.env.*
+!.env.example
+*.log

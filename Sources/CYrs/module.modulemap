@@ -1,0 +1,4 @@
+module CYrs {
+    header "include/cyrs.h"
+    export *
+}

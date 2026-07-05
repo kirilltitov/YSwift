@@ -162,8 +162,7 @@ struct GoldenVectorTests {
     // must reconstruct the same text from the reference updates. They are enabled
     // once a real engine (Phase 1: YrsEngine) is wired; the stub engine traps.
 
-    @Test("golden-encode: replaying ops yields byte-identical update + state vector",
-          .disabled("Phase 1: no engine wired yet (UnimplementedEngine traps)"))
+    @Test("golden-encode: replaying ops yields byte-identical update + state vector")
     func goldenEncode() throws {
         let suite = try Golden.loadSuite()
         for f in suite.encode {
@@ -179,8 +178,7 @@ struct GoldenVectorTests {
         }
     }
 
-    @Test("golden-decode: applying reference updates reconstructs the text",
-          .disabled("Phase 1: no engine wired yet (UnimplementedEngine traps)"))
+    @Test("golden-decode: applying reference updates reconstructs the text")
     func goldenDecode() throws {
         let suite = try Golden.loadSuite()
         for f in suite.encode {
@@ -192,8 +190,7 @@ struct GoldenVectorTests {
         }
     }
 
-    @Test("convergence: applying updates in any order yields the same text",
-          .disabled("Phase 1: no engine wired yet (UnimplementedEngine traps)"))
+    @Test("convergence: applying updates in any order yields the same text")
     func convergence() throws {
         let suite = try Golden.loadSuite()
         for f in suite.converge {

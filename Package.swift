@@ -11,12 +11,19 @@ let package = Package(
         .library(name: "YSwift", targets: ["YSwift"]),
     ],
     targets: [
-        // Phase 1/2 public API + engine seam. Currently backed by a stub engine;
-        // Phase 1 adds a `YrsEngine` over the `yffi` C ABI (a `CYrs` systemLibrary target).
+        // C ABI over the Rust `yrs` CRDT (the `cyrs` crate under rust/cyrs).
+        // The static library must be built first: `cargo build --release` in rust/cyrs.
+        .systemLibrary(name: "CYrs", path: "Sources/CYrs"),
+
+        // Phase 1/2 public API + engine seam, backed by YrsEngine (Yrs facade).
         .target(
             name: "YSwift",
+            dependencies: ["CYrs"],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-Lrust/cyrs/target/release", "-lcyrs"]),
             ]
         ),
         .testTarget(

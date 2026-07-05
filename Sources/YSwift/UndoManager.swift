@@ -2,35 +2,47 @@
 ///
 /// Only edits whose transaction `origin` is in `trackedOrigins` are captured;
 /// consecutive edits within `captureTimeout` merge into one undo step.
-public final class UndoManager: Sendable {
-    private let text: YText
-    private let trackedOrigins: Set<Origin>
-    private let captureTimeout: Duration
+///
+/// Not `Sendable`: it is a stateful controller tied to a single document, and
+/// `undo`/`redo` open their own transaction (serialized against the document's
+/// transactions via the document lock). Use it from one context.
+public final class UndoManager {
+    private let doc: YDoc
+    private let handle: AnyObject?
 
     public init(_ text: YText, trackedOrigins: Set<Origin> = [], captureTimeout: Duration = .milliseconds(500)) {
-        self.text = text
-        self.trackedOrigins = trackedOrigins
-        self.captureTimeout = captureTimeout
+        doc = text.doc
+        let parts = captureTimeout.components
+        let millis = UInt64(max(0, parts.seconds)) * 1000
+            + UInt64(max(0, parts.attoseconds) / 1_000_000_000_000_000)
+        handle = text.doc.performExclusively {
+            text.doc.engine.makeUndoManager(text.handle, trackedOrigins: trackedOrigins, captureTimeoutMillis: millis)
+        }
     }
 
     public func undo() {
-        fatalError("YSwift: UndoManager.undo is not implemented yet. See DECISIONS.md.")
+        guard let handle else { return }
+        _ = doc.performExclusively { doc.engine.undoManagerUndo(handle) }
     }
 
     public func redo() {
-        fatalError("YSwift: UndoManager.redo is not implemented yet. See DECISIONS.md.")
+        guard let handle else { return }
+        _ = doc.performExclusively { doc.engine.undoManagerRedo(handle) }
     }
 
     /// Ensures the next change starts a new undo step (does not merge).
     public func stopCapturing() {
-        fatalError("YSwift: UndoManager.stopCapturing is not implemented yet. See DECISIONS.md.")
+        guard let handle else { return }
+        doc.performExclusively { doc.engine.undoManagerStopCapturing(handle) }
     }
 
     public var canUndo: Bool {
-        fatalError("YSwift: UndoManager.canUndo is not implemented yet. See DECISIONS.md.")
+        guard let handle else { return false }
+        return doc.performExclusively { doc.engine.undoManagerCanUndo(handle) }
     }
 
     public var canRedo: Bool {
-        fatalError("YSwift: UndoManager.canRedo is not implemented yet. See DECISIONS.md.")
+        guard let handle else { return false }
+        return doc.performExclusively { doc.engine.undoManagerCanRedo(handle) }
     }
 }

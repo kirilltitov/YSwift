@@ -9,6 +9,7 @@
 typedef struct CYrsDoc CYrsDoc;
 typedef struct CYrsTxn CYrsTxn;
 typedef struct CYrsSubscription CYrsSubscription;
+typedef struct CYrsUndoManager CYrsUndoManager;
 
 /* --- Document --- */
 CYrsDoc *ydoc_new(uint64_t client_id, bool skip_gc);
@@ -52,6 +53,16 @@ int64_t ysticky_to_index(CYrsTxn *txn, const uint8_t *sticky, size_t sticky_len)
 typedef void (*YUpdateCallback)(void *user_data, const uint8_t *origin, size_t origin_len, const uint8_t *update, size_t update_len);
 CYrsSubscription *ydoc_observe_update_v1(CYrsDoc *doc, YUpdateCallback cb, void *user_data);
 void ysubscription_free(CYrsSubscription *sub);
+
+/* --- Undo manager (undo/redo open their own transaction; serialize externally) --- */
+CYrsUndoManager *yundo_new(CYrsDoc *doc, const uint8_t *name, size_t name_len, uint64_t capture_timeout_ms);
+void yundo_include_origin(CYrsUndoManager *mgr, const uint8_t *origin, size_t origin_len);
+bool yundo_undo(CYrsUndoManager *mgr);
+bool yundo_redo(CYrsUndoManager *mgr);
+bool yundo_can_undo(CYrsUndoManager *mgr);
+bool yundo_can_redo(CYrsUndoManager *mgr);
+void yundo_stop_capturing(CYrsUndoManager *mgr);
+void yundo_free(CYrsUndoManager *mgr);
 
 /* --- Memory: release any uint8_t* buffer returned above --- */
 void ybytes_free(uint8_t *ptr, size_t len);

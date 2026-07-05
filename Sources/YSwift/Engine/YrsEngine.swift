@@ -17,6 +17,16 @@ final class RawTransaction {
     init(_ ptr: OpaquePointer) { self.ptr = ptr }
 }
 
+/// Owns a yrs `UndoManager` pointer; frees it on release.
+///
+/// Freeing unsubscribes the manager's document observers, so release it on the
+/// same context that drives the document (not concurrently with a transaction).
+final class RawUndoManager {
+    let ptr: OpaquePointer
+    init(_ ptr: OpaquePointer) { self.ptr = ptr }
+    deinit { yundo_free(ptr) }
+}
+
 /// Holds a Swift update callback so the C trampoline can reach it via a `void*`.
 final class UpdateCallbackBox {
     let callback: @Sendable (Data, Origin?) -> Void
@@ -218,6 +228,26 @@ final class YrsEngine: YEngine, @unchecked Sendable {
         let resolved = bytes.withUnsafeBufferPointer { ysticky_to_index(t, $0.baseAddress, $0.count) }
         return resolved < 0 ? nil : Int(resolved)
     }
+
+    // MARK: Undo manager
+
+    func makeUndoManager(_ handle: TextHandle, trackedOrigins: Set<Origin>, captureTimeoutMillis: UInt64) -> AnyObject? {
+        let name = Array(handle.name.utf8)
+        guard let ptr = name.withUnsafeBufferPointer({ n in yundo_new(doc, n.baseAddress, n.count, captureTimeoutMillis) }) else {
+            return nil
+        }
+        for origin in trackedOrigins {
+            let bytes = Array(origin.rawValue.utf8)
+            bytes.withUnsafeBufferPointer { o in yundo_include_origin(ptr, o.baseAddress, o.count) }
+        }
+        return RawUndoManager(ptr)
+    }
+
+    func undoManagerUndo(_ mgr: AnyObject) -> Bool { (mgr as? RawUndoManager).map { yundo_undo($0.ptr) } ?? false }
+    func undoManagerRedo(_ mgr: AnyObject) -> Bool { (mgr as? RawUndoManager).map { yundo_redo($0.ptr) } ?? false }
+    func undoManagerCanUndo(_ mgr: AnyObject) -> Bool { (mgr as? RawUndoManager).map { yundo_can_undo($0.ptr) } ?? false }
+    func undoManagerCanRedo(_ mgr: AnyObject) -> Bool { (mgr as? RawUndoManager).map { yundo_can_redo($0.ptr) } ?? false }
+    func undoManagerStopCapturing(_ mgr: AnyObject) { _ = (mgr as? RawUndoManager).map { yundo_stop_capturing($0.ptr) } }
 
     // MARK: Observers
 

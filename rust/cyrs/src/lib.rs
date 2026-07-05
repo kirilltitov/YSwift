@@ -22,6 +22,7 @@ use std::ffi::c_void;
 use std::sync::Arc;
 use yrs::types::text::YChange;
 use yrs::types::Attrs;
+use yrs::undo::{Options as UndoOptions, UndoManager};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
@@ -429,6 +430,66 @@ pub unsafe extern "C" fn ysticky_to_index(
             None => -1,
         },
         Err(_) => -1,
+    }
+}
+
+// ---- Undo manager -----------------------------------------------------------
+// undo/redo open their own transaction; callers must ensure no other transaction
+// is active on the document (the Swift side serializes via the doc lock).
+
+#[no_mangle]
+pub unsafe extern "C" fn yundo_new(
+    doc: *mut Doc,
+    name: *const u8,
+    name_len: usize,
+    capture_timeout_ms: u64,
+) -> *mut UndoManager<()> {
+    let mut opts = UndoOptions::<()>::default();
+    opts.capture_timeout_millis = capture_timeout_ms;
+    let mut mgr: UndoManager<()> = UndoManager::with_options(opts);
+    let text = (*doc).get_or_insert_text(as_str(name, name_len));
+    mgr.expand_scope(&*doc, &text);
+    Box::into_raw(Box::new(mgr))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn yundo_include_origin(
+    mgr: *mut UndoManager<()>,
+    origin: *const u8,
+    origin_len: usize,
+) {
+    (*mgr).include_origin(Origin::from(as_slice(origin, origin_len)));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn yundo_undo(mgr: *mut UndoManager<()>) -> bool {
+    (*mgr).undo_blocking()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn yundo_redo(mgr: *mut UndoManager<()>) -> bool {
+    (*mgr).redo_blocking()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn yundo_can_undo(mgr: *mut UndoManager<()>) -> bool {
+    (*mgr).can_undo()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn yundo_can_redo(mgr: *mut UndoManager<()>) -> bool {
+    (*mgr).can_redo()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn yundo_stop_capturing(mgr: *mut UndoManager<()>) {
+    (*mgr).reset();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn yundo_free(mgr: *mut UndoManager<()>) {
+    if !mgr.is_null() {
+        drop(Box::from_raw(mgr));
     }
 }
 

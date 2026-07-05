@@ -43,6 +43,13 @@ protocol YEngine: AnyObject, Sendable {
     func stickyFromIndex(in txn: YTransaction, _ handle: TextHandle, index: Int, assoc: StickyIndex.Assoc) -> Data?
     func stickyToIndex(in txn: YTransaction, _ raw: Data) -> Int?
 
+    func makeUndoManager(_ handle: TextHandle, trackedOrigins: Set<Origin>, captureTimeoutMillis: UInt64) -> AnyObject?
+    func undoManagerUndo(_ mgr: AnyObject) -> Bool
+    func undoManagerRedo(_ mgr: AnyObject) -> Bool
+    func undoManagerCanUndo(_ mgr: AnyObject) -> Bool
+    func undoManagerCanRedo(_ mgr: AnyObject) -> Bool
+    func undoManagerStopCapturing(_ mgr: AnyObject)
+
     func onUpdate(_ callback: @escaping @Sendable (Data, Origin?) -> Void) -> YSubscription
     func observeText(_ handle: TextHandle, _ callback: @escaping @Sendable (YTextEvent) -> Void) -> YSubscription
 

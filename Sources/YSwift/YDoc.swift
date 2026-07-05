@@ -72,6 +72,13 @@ public final class YDoc: Sendable {
         sync.withLock { _ in engine.onUpdate(callback) }
     }
 
+    /// Runs `body` while holding the document's transaction lock. Used by stateful
+    /// helpers (e.g. `UndoManager`) whose operations open their own transaction and
+    /// must not race the document's transactions.
+    func performExclusively<T>(_ body: () -> T) -> T {
+        sync.withLock { _ in body() }
+    }
+
     /// Releases the resident document.
     public func destroy() { engine.destroy() }
 }

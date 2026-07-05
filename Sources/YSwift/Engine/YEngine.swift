@@ -8,8 +8,6 @@ import Foundation
 /// name. Phase 1 will additionally carry the underlying Yrs `Branch` pointer.
 public struct TextHandle: Sendable, Hashable {
     let name: String
-
-    init(name: String) { self.name = name }
 }
 
 /// The internal seam between the frozen public API and a concrete backend.
@@ -29,7 +27,8 @@ protocol YEngine: AnyObject, Sendable {
     func beginTransaction(origin: Origin?, writable: Bool) -> YTransaction
     func endTransaction(_ txn: YTransaction)
 
-    func textInsert(in txn: YTransaction, _ handle: TextHandle, at index: Int, _ string: String, attributes: Attributes?)
+    func textInsert(
+        in txn: YTransaction, _ handle: TextHandle, at index: Int, _ string: String, attributes: Attributes?)
     func textDelete(in txn: YTransaction, _ handle: TextHandle, at index: Int, length: Int)
     func textFormat(in txn: YTransaction, _ handle: TextHandle, at index: Int, length: Int, attributes: Attributes)
     func textString(in txn: YTransaction, _ handle: TextHandle) -> String

@@ -1,11 +1,13 @@
-import Testing
 import Synchronization
+import Testing
+
+@testable import YSwift
+
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
 import Foundation
 #endif
-@testable import YSwift
 
 /// Verifies the frozen public API compiles and its value-type layer behaves.
 /// Engine-backed operations trap in the scaffold and are covered once `YrsEngine`
@@ -48,12 +50,14 @@ struct PublicAPIContractTests {
     @Test("YValue literals build the expected structure")
     func yValueLiterals() {
         let v: YValue = ["bold": true, "size": 12, "name": "x", "n": .null]
-        #expect(v == .object([
-            "bold": .bool(true),
-            "size": .int(12),
-            "name": .string("x"),
-            "n": .null,
-        ]))
+        #expect(
+            v
+                == .object([
+                    "bold": .bool(true),
+                    "size": .int(12),
+                    "name": .string("x"),
+                    "n": .null,
+                ]))
     }
 
     @Test("Origin is a Sendable value type usable in a Set")

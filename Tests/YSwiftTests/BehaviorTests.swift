@@ -1,11 +1,13 @@
-import Testing
 import Synchronization
+import Testing
+
+@testable import YSwift
+
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
 import Foundation
 #endif
-@testable import YSwift
 
 /// Behavioral (non-golden) checks for stateful helpers.
 @Suite("Engine behavior")
@@ -37,7 +39,7 @@ struct EngineBehaviorTests {
 
         doc.transact(origin: "other") { txn in text.insert(txn, at: 0, "x") }
         #expect(!undo.canUndo)
-        undo.undo() // no-op
+        undo.undo()  // no-op
         #expect(doc.transact { txn in text.string(txn) } == "x")
     }
 
@@ -104,9 +106,9 @@ struct EngineBehaviorTests {
         let docB = YDoc(clientID: 2)
         let awB = Awareness(docB)
         awB.setLocalStateField("n", "B")
-        awB.applyUpdate(awA.encodeUpdate()) // awB now knows clients 1 and 2
+        awB.applyUpdate(awA.encodeUpdate())  // awB now knows clients 1 and 2
 
-        let subset = awB.encodeUpdate(clients: [1]) // only client 1
+        let subset = awB.encodeUpdate(clients: [1])  // only client 1
         let docC = YDoc(clientID: 3)
         let awC = Awareness(docC)
         awC.applyUpdate(subset)

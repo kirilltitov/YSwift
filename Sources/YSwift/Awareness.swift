@@ -33,20 +33,20 @@ public final class Awareness {
     /// Sets a field of this client's local awareness state (`nil` clears it).
     /// Fields are merged, matching Yjs `setLocalStateField`.
     public func setLocalStateField(_ field: String, _ value: YValue?) {
-        guard let handle else { return }
+        guard let handle = self.handle else { return }
         if let value {
-            localState[field] = value
+            self.localState[field] = value
         } else {
-            localState.removeValue(forKey: field)
+            self.localState.removeValue(forKey: field)
         }
-        let json = (try? JSONEncoder().encode(localState)) ?? Data("{}".utf8)
-        doc.engine.awarenessSetLocalState(handle, json: json)
+        let json = (try? JSONEncoder().encode(self.localState)) ?? Data("{}".utf8)
+        self.doc.engine.awarenessSetLocalState(handle, json: json)
     }
 
     /// All currently-known client states, keyed by client id.
     public func states() -> [UInt64: [String: YValue]] {
-        guard let handle else { return [:] }
-        let data = doc.engine.awarenessStates(handle)
+        guard let handle = self.handle else { return [:] }
+        let data = self.doc.engine.awarenessStates(handle)
         guard let raw = try? JSONDecoder().decode([String: YValue].self, from: data) else { return [:] }
         var result: [UInt64: [String: YValue]] = [:]
         for (key, value) in raw {
@@ -61,28 +61,28 @@ public final class Awareness {
     /// `applyUpdate` / local-state changes.
     @discardableResult
     public func onChange(_ callback: @escaping @Sendable (Change) -> Void) -> YSubscription {
-        guard let handle else { return YSubscription {} }
-        return doc.engine.awarenessOnChange(handle, callback)
+        guard let handle = self.handle else { return YSubscription {} }
+        return self.doc.engine.awarenessOnChange(handle, callback)
     }
 
     /// Encodes an awareness update. Pass `clients` to restrict it to specific
     /// clients; otherwise all known clients are included.
     public func encodeUpdate(clients: [UInt64]? = nil) -> Data {
-        guard let handle else { return Data() }
-        return doc.engine.awarenessEncodeUpdate(handle, clients: clients)
+        guard let handle = self.handle else { return Data() }
+        return self.doc.engine.awarenessEncodeUpdate(handle, clients: clients)
     }
 
     /// Applies a remote awareness update.
     public func applyUpdate(_ data: Data, origin: Origin? = nil) {
-        guard let handle else { return }
-        _ = doc.engine.awarenessApplyUpdate(handle, data)
+        guard let handle = self.handle else { return }
+        _ = self.doc.engine.awarenessApplyUpdate(handle, data)
     }
 
     /// Removes the given clients' states (e.g. on disconnect).
     public func removeStates(_ clients: [UInt64]) {
-        guard let handle else { return }
+        guard let handle = self.handle else { return }
         for client in clients {
-            doc.engine.awarenessRemoveState(handle, client: client)
+            self.doc.engine.awarenessRemoveState(handle, client: client)
         }
     }
 }

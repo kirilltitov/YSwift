@@ -8,7 +8,7 @@ let package = Package(
         .iOS(.v18),
     ],
     products: [
-        .library(name: "YSwift", targets: ["YSwift"]),
+        .library(name: "YSwift", targets: ["YSwift"])
     ],
     targets: [
         // C ABI over the Rust `yrs` CRDT (the `cyrs` crate under rust/cyrs).
@@ -20,7 +20,7 @@ let package = Package(
             name: "YSwift",
             dependencies: ["CYrs"],
             swiftSettings: [
-                .swiftLanguageMode(.v6),
+                .swiftLanguageMode(.v6)
             ],
             linkerSettings: [
                 .unsafeFlags(["-Lrust/cyrs/target/release", "-lcyrs"]),
@@ -34,10 +34,10 @@ let package = Package(
             name: "YSwiftTests",
             dependencies: ["YSwift"],
             resources: [
-                .copy("Fixtures"),
+                .copy("Fixtures")
             ],
             swiftSettings: [
-                .swiftLanguageMode(.v6),
+                .swiftLanguageMode(.v6)
             ]
         ),
     ]

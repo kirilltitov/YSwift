@@ -1,5 +1,6 @@
 import CYrs
 import Synchronization
+
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -24,14 +25,14 @@ final class RawTransaction {
 final class RawUndoManager {
     let ptr: OpaquePointer
     init(_ ptr: OpaquePointer) { self.ptr = ptr }
-    deinit { yundo_free(ptr) }
+    deinit { yundo_free(self.ptr) }
 }
 
 /// Owns a yrs `Awareness` pointer; frees it on release.
 final class RawAwareness: @unchecked Sendable {
     let ptr: OpaquePointer
     init(_ ptr: OpaquePointer) { self.ptr = ptr }
-    deinit { ysync_awareness_free(ptr) }
+    deinit { ysync_awareness_free(self.ptr) }
 }
 
 /// Holds an awareness-change callback for the C trampoline.
@@ -92,11 +93,12 @@ private func awarenessTrampoline(
     func ids(_ p: UnsafePointer<UInt64>?, _ n: Int) -> [UInt64] {
         (n > 0 && p != nil) ? Array(UnsafeBufferPointer(start: p!, count: n)) : []
     }
-    box.callback(Awareness.Change(
-        added: ids(addedPtr, addedLen),
-        updated: ids(updatedPtr, updatedLen),
-        removed: ids(removedPtr, removedLen)
-    ))
+    box.callback(
+        Awareness.Change(
+            added: ids(addedPtr, addedLen),
+            updated: ids(updatedPtr, updatedLen),
+            removed: ids(removedPtr, removedLen)
+        ))
 }
 
 /// C trampoline for `ytext_observe`: decodes the JSON delta into a `YTextEvent`.
@@ -123,21 +125,21 @@ final class YrsEngine: YEngine, @unchecked Sendable {
 
     init(clientID: UInt64?, gc: Bool) {
         // v13 generates 32-bit client ids; match that for the random case.
-        let requested = clientID ?? UInt64.random(in: 0 ..< (UInt64(1) << 32))
-        doc = ydoc_new(requested, !gc)
-        self.clientID = ydoc_client_id(doc)
+        let requested = clientID ?? UInt64.random(in: 0..<(UInt64(1) << 32))
+        self.doc = ydoc_new(requested, !gc)
+        self.clientID = ydoc_client_id(self.doc)
     }
 
-    deinit { freeDoc() }
+    deinit { self.freeDoc() }
 
-    func destroy() { freeDoc() }
+    func destroy() { self.freeDoc() }
 
     private func freeDoc() {
-        let shouldFree = alive.withLock { flag -> Bool in
+        let shouldFree = self.alive.withLock { flag -> Bool in
             defer { flag = false }
             return flag
         }
-        if shouldFree { ydoc_destroy(doc) }
+        if shouldFree { ydoc_destroy(self.doc) }
     }
 
     // MARK: Handles & transactions
@@ -148,29 +150,32 @@ final class YrsEngine: YEngine, @unchecked Sendable {
         let raw: OpaquePointer
         if let origin {
             let bytes = Array(origin.rawValue.utf8)
-            raw = bytes.withUnsafeBufferPointer { ytxn_with_origin(doc, $0.baseAddress, $0.count)! }
+            raw = bytes.withUnsafeBufferPointer { ytxn_with_origin(self.doc, $0.baseAddress, $0.count)! }
         } else {
-            raw = ytxn(doc)!
+            raw = ytxn(self.doc)!
         }
         return YTransaction(engine: self, origin: origin, writable: writable, raw: RawTransaction(raw))
     }
 
     func endTransaction(_ txn: YTransaction) {
-        if let t = txnPtr(txn) { ytxn_commit(t) }
+        if let t = self.txnPtr(txn) { ytxn_commit(t) }
     }
 
     // MARK: Text operations (name resolved through the active transaction)
 
-    func textInsert(in txn: YTransaction, _ handle: TextHandle, at index: Int, _ string: String, attributes: Attributes?) {
-        guard let t = txnPtr(txn) else { return }
+    func textInsert(
+        in txn: YTransaction, _ handle: TextHandle, at index: Int, _ string: String, attributes: Attributes?
+    ) {
+        guard let t = self.txnPtr(txn) else { return }
         let name = Array(handle.name.utf8)
         let str = Array(string.utf8)
         name.withUnsafeBufferPointer { n in
             if let attributes, !attributes.isEmpty {
-                let json = attributesJSON(attributes)
+                let json = self.attributesJSON(attributes)
                 str.withUnsafeBufferPointer { s in
                     json.withUnsafeBufferPointer { a in
-                        ytext_insert_attrs(t, n.baseAddress, n.count, UInt32(index), s.baseAddress, s.count, a.baseAddress, a.count)
+                        ytext_insert_attrs(
+                            t, n.baseAddress, n.count, UInt32(index), s.baseAddress, s.count, a.baseAddress, a.count)
                     }
                 }
             } else {
@@ -182,7 +187,7 @@ final class YrsEngine: YEngine, @unchecked Sendable {
     }
 
     func textDelete(in txn: YTransaction, _ handle: TextHandle, at index: Int, length: Int) {
-        guard let t = txnPtr(txn) else { return }
+        guard let t = self.txnPtr(txn) else { return }
         let name = Array(handle.name.utf8)
         name.withUnsafeBufferPointer { n in
             ytext_remove(t, n.baseAddress, n.count, UInt32(index), UInt32(length))
@@ -190,9 +195,9 @@ final class YrsEngine: YEngine, @unchecked Sendable {
     }
 
     func textFormat(in txn: YTransaction, _ handle: TextHandle, at index: Int, length: Int, attributes: Attributes) {
-        guard let t = txnPtr(txn) else { return }
+        guard let t = self.txnPtr(txn) else { return }
         let name = Array(handle.name.utf8)
-        let json = attributesJSON(attributes)
+        let json = self.attributesJSON(attributes)
         name.withUnsafeBufferPointer { n in
             json.withUnsafeBufferPointer { a in
                 ytext_format(t, n.baseAddress, n.count, UInt32(index), UInt32(length), a.baseAddress, a.count)
@@ -201,25 +206,25 @@ final class YrsEngine: YEngine, @unchecked Sendable {
     }
 
     func textString(in txn: YTransaction, _ handle: TextHandle) -> String {
-        guard let t = txnPtr(txn) else { return "" }
+        guard let t = self.txnPtr(txn) else { return "" }
         let name = Array(handle.name.utf8)
         var outLen = 0
         let ptr = name.withUnsafeBufferPointer { n in ytext_string(t, n.baseAddress, n.count, &outLen) }
-        return String(decoding: consumeBytes(ptr, outLen), as: UTF8.self)
+        return String(decoding: self.consumeBytes(ptr, outLen), as: UTF8.self)
     }
 
     func textLength(in txn: YTransaction, _ handle: TextHandle) -> Int {
-        guard let t = txnPtr(txn) else { return 0 }
+        guard let t = self.txnPtr(txn) else { return 0 }
         let name = Array(handle.name.utf8)
         return name.withUnsafeBufferPointer { n in Int(ytext_len(t, n.baseAddress, n.count)) }
     }
 
     func textDelta(in txn: YTransaction, _ handle: TextHandle) -> [Delta] {
-        guard let t = txnPtr(txn) else { return [] }
+        guard let t = self.txnPtr(txn) else { return [] }
         let name = Array(handle.name.utf8)
         var outLen = 0
         let ptr = name.withUnsafeBufferPointer { n in ytext_delta(t, n.baseAddress, n.count, &outLen) }
-        let data = consumeBytes(ptr, outLen)
+        let data = self.consumeBytes(ptr, outLen)
         guard let ops = try? JSONDecoder().decode([DeltaOpDTO].self, from: data) else { return [] }
         return ops.compactMap { $0.toDelta() }
     }
@@ -227,7 +232,7 @@ final class YrsEngine: YEngine, @unchecked Sendable {
     // MARK: Encoding & sync
 
     func encodeStateAsUpdate(in txn: YTransaction, since sv: StateVector?) -> Data {
-        guard let t = txnPtr(txn) else { return Data() }
+        guard let t = self.txnPtr(txn) else { return Data() }
         var outLen = 0
         let ptr: UnsafeMutablePointer<UInt8>?
         if let sv {
@@ -238,18 +243,18 @@ final class YrsEngine: YEngine, @unchecked Sendable {
         } else {
             ptr = ytxn_state_as_update_v1(t, nil, 0, &outLen)
         }
-        return consumeBytes(ptr, outLen)
+        return self.consumeBytes(ptr, outLen)
     }
 
     func encodeStateVector(in txn: YTransaction) -> StateVector {
-        guard let t = txnPtr(txn) else { return StateVector(data: Data()) }
+        guard let t = self.txnPtr(txn) else { return StateVector(data: Data()) }
         var outLen = 0
         let ptr = ytxn_state_vector_v1(t, &outLen)
-        return StateVector(data: consumeBytes(ptr, outLen))
+        return StateVector(data: self.consumeBytes(ptr, outLen))
     }
 
     func applyUpdate(in txn: YTransaction, _ update: Data, origin: Origin?) {
-        guard let t = txnPtr(txn) else { return }
+        guard let t = self.txnPtr(txn) else { return }
         let bytes = Array(update)
         _ = bytes.withUnsafeBufferPointer { ytxn_apply_update_v1(t, $0.baseAddress, $0.count) }
     }
@@ -257,7 +262,7 @@ final class YrsEngine: YEngine, @unchecked Sendable {
     // MARK: Sticky index
 
     func stickyFromIndex(in txn: YTransaction, _ handle: TextHandle, index: Int, assoc: StickyIndex.Assoc) -> Data? {
-        guard let t = txnPtr(txn) else { return nil }
+        guard let t = self.txnPtr(txn) else { return nil }
         let name = Array(handle.name.utf8)
         let a: Int8 = assoc == .before ? -1 : 0
         var outLen = 0
@@ -265,12 +270,12 @@ final class YrsEngine: YEngine, @unchecked Sendable {
             ysticky_from_index(t, n.baseAddress, n.count, UInt32(index), a, &outLen)
         }
         guard let ptr else { return nil }
-        let data = consumeBytes(ptr, outLen)
+        let data = self.consumeBytes(ptr, outLen)
         return data.isEmpty ? nil : data
     }
 
     func stickyToIndex(in txn: YTransaction, _ raw: Data) -> Int? {
-        guard let t = txnPtr(txn) else { return nil }
+        guard let t = self.txnPtr(txn) else { return nil }
         let bytes = Array(raw)
         let resolved = bytes.withUnsafeBufferPointer { ysticky_to_index(t, $0.baseAddress, $0.count) }
         return resolved < 0 ? nil : Int(resolved)
@@ -278,9 +283,14 @@ final class YrsEngine: YEngine, @unchecked Sendable {
 
     // MARK: Undo manager
 
-    func makeUndoManager(_ handle: TextHandle, trackedOrigins: Set<Origin>, captureTimeoutMillis: UInt64) -> AnyObject? {
+    func makeUndoManager(_ handle: TextHandle, trackedOrigins: Set<Origin>, captureTimeoutMillis: UInt64) -> AnyObject?
+    {
         let name = Array(handle.name.utf8)
-        guard let ptr = name.withUnsafeBufferPointer({ n in yundo_new(doc, n.baseAddress, n.count, captureTimeoutMillis) }) else {
+        guard
+            let ptr = name.withUnsafeBufferPointer({ n in
+                yundo_new(self.doc, n.baseAddress, n.count, captureTimeoutMillis)
+            })
+        else {
             return nil
         }
         for origin in trackedOrigins {
@@ -292,50 +302,61 @@ final class YrsEngine: YEngine, @unchecked Sendable {
 
     func undoManagerUndo(_ mgr: AnyObject) -> Bool { (mgr as? RawUndoManager).map { yundo_undo($0.ptr) } ?? false }
     func undoManagerRedo(_ mgr: AnyObject) -> Bool { (mgr as? RawUndoManager).map { yundo_redo($0.ptr) } ?? false }
-    func undoManagerCanUndo(_ mgr: AnyObject) -> Bool { (mgr as? RawUndoManager).map { yundo_can_undo($0.ptr) } ?? false }
-    func undoManagerCanRedo(_ mgr: AnyObject) -> Bool { (mgr as? RawUndoManager).map { yundo_can_redo($0.ptr) } ?? false }
-    func undoManagerStopCapturing(_ mgr: AnyObject) { _ = (mgr as? RawUndoManager).map { yundo_stop_capturing($0.ptr) } }
+    func undoManagerCanUndo(_ mgr: AnyObject) -> Bool {
+        (mgr as? RawUndoManager).map { yundo_can_undo($0.ptr) } ?? false
+    }
+    func undoManagerCanRedo(_ mgr: AnyObject) -> Bool {
+        (mgr as? RawUndoManager).map { yundo_can_redo($0.ptr) } ?? false
+    }
+    func undoManagerStopCapturing(_ mgr: AnyObject) {
+        _ = (mgr as? RawUndoManager).map { yundo_stop_capturing($0.ptr) }
+    }
 
     // MARK: Awareness
 
     private func awPtr(_ aw: AnyObject) -> OpaquePointer? { (aw as? RawAwareness)?.ptr }
 
-    func makeAwareness() -> AnyObject? { ysync_awareness_new(doc).map { RawAwareness($0) } }
+    func makeAwareness() -> AnyObject? { ysync_awareness_new(self.doc).map { RawAwareness($0) } }
 
     func awarenessSetLocalState(_ aw: AnyObject, json: Data) {
-        guard let p = awPtr(aw) else { return }
+        guard let p = self.awPtr(aw) else { return }
         let bytes = Array(json)
         bytes.withUnsafeBufferPointer { ysync_set_local_state(p, $0.baseAddress, $0.count) }
     }
 
-    func awarenessCleanLocalState(_ aw: AnyObject) { if let p = awPtr(aw) { ysync_clean_local_state(p) } }
+    func awarenessCleanLocalState(_ aw: AnyObject) { if let p = self.awPtr(aw) { ysync_clean_local_state(p) } }
 
-    func awarenessRemoveState(_ aw: AnyObject, client: UInt64) { if let p = awPtr(aw) { ysync_remove_state(p, client) } }
+    func awarenessRemoveState(_ aw: AnyObject, client: UInt64) {
+        if let p = self.awPtr(aw) { ysync_remove_state(p, client) }
+    }
 
     func awarenessStates(_ aw: AnyObject) -> Data {
-        guard let p = awPtr(aw) else { return Data() }
+        guard let p = self.awPtr(aw) else { return Data() }
         var outLen = 0
-        return consumeBytes(ysync_states(p, &outLen), outLen)
+        return self.consumeBytes(ysync_states(p, &outLen), outLen)
     }
 
     func awarenessEncodeUpdate(_ aw: AnyObject, clients: [UInt64]?) -> Data {
-        guard let p = awPtr(aw) else { return Data() }
+        guard let p = self.awPtr(aw) else { return Data() }
         var outLen = 0
         if let clients {
-            let ptr = clients.withUnsafeBufferPointer { ysync_encode_update_clients(p, $0.baseAddress, $0.count, &outLen) }
-            return consumeBytes(ptr, outLen)
+            let ptr = clients.withUnsafeBufferPointer {
+                ysync_encode_update_clients(p, $0.baseAddress, $0.count, &outLen)
+            }
+            return self.consumeBytes(ptr, outLen)
         }
-        return consumeBytes(ysync_encode_update(p, &outLen), outLen)
+        return self.consumeBytes(ysync_encode_update(p, &outLen), outLen)
     }
 
     func awarenessApplyUpdate(_ aw: AnyObject, _ update: Data) -> Bool {
-        guard let p = awPtr(aw) else { return false }
+        guard let p = self.awPtr(aw) else { return false }
         let bytes = Array(update)
         return bytes.withUnsafeBufferPointer { ysync_apply_update(p, $0.baseAddress, $0.count) }
     }
 
-    func awarenessOnChange(_ aw: AnyObject, _ callback: @escaping @Sendable (Awareness.Change) -> Void) -> YSubscription {
-        guard let p = awPtr(aw) else { return YSubscription {} }
+    func awarenessOnChange(_ aw: AnyObject, _ callback: @escaping @Sendable (Awareness.Change) -> Void) -> YSubscription
+    {
+        guard let p = self.awPtr(aw) else { return YSubscription {} }
         let box = AwarenessChangeBox(callback)
         let userData = Unmanaged.passRetained(box).toOpaque()
         guard let sub = ysync_on_change(p, awarenessTrampoline, userData) else {
@@ -354,7 +375,7 @@ final class YrsEngine: YEngine, @unchecked Sendable {
     func onUpdate(_ callback: @escaping @Sendable (Data, Origin?) -> Void) -> YSubscription {
         let box = UpdateCallbackBox(callback)
         let userData = Unmanaged.passRetained(box).toOpaque()
-        guard let sub = ydoc_observe_update_v1(doc, yrsUpdateTrampoline, userData) else {
+        guard let sub = ydoc_observe_update_v1(self.doc, yrsUpdateTrampoline, userData) else {
             Unmanaged<UpdateCallbackBox>.fromOpaque(userData).release()
             return YSubscription {}
         }
@@ -369,7 +390,11 @@ final class YrsEngine: YEngine, @unchecked Sendable {
         let box = TextObserverBox(callback)
         let userData = Unmanaged.passRetained(box).toOpaque()
         let name = Array(handle.name.utf8)
-        guard let sub = name.withUnsafeBufferPointer({ n in ytext_observe(doc, n.baseAddress, n.count, textObserverTrampoline, userData) }) else {
+        guard
+            let sub = name.withUnsafeBufferPointer({ n in
+                ytext_observe(self.doc, n.baseAddress, n.count, textObserverTrampoline, userData)
+            })
+        else {
             Unmanaged<TextObserverBox>.fromOpaque(userData).release()
             return YSubscription {}
         }
@@ -410,8 +435,8 @@ private struct DeltaOpDTO: Decodable {
     let attributes: [String: YValue]?
 
     func toDelta() -> Delta? {
-        if let insert { return .insert(insert, attributes: attributes) }
-        if let retain { return .retain(retain, attributes: attributes) }
+        if let insert { return .insert(insert, attributes: self.attributes) }
+        if let retain { return .retain(retain, attributes: self.attributes) }
         if let delete { return .delete(delete) }
         return nil
     }

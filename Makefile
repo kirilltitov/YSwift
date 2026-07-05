@@ -3,7 +3,9 @@
 # The Swift package links a Rust static library (rust/cyrs, a C-ABI facade over
 # yrs), so that staticlib must be built before Swift. These targets chain it.
 
-.PHONY: all build test rust rust-test fixtures clean
+.PHONY: all build test rust rust-test fixtures lint format clean
+
+SWIFT_SOURCES := Sources Tests Package.swift
 
 CYRS_DIR := rust/cyrs
 
@@ -35,6 +37,14 @@ test: rust
 ## fixtures: regenerate golden vectors from pinned JS-Yjs
 fixtures:
 	cd fixtures && npm ci && npm run generate
+
+## lint: check formatting/style with swift-format (no changes)
+lint:
+	swift format lint --strict --recursive $(SWIFT_SOURCES)
+
+## format: apply swift-format in place
+format:
+	swift format --in-place --recursive $(SWIFT_SOURCES)
 
 ## clean: remove Swift and Rust build products
 clean:

@@ -13,5 +13,5 @@ extension Origin: ExpressibleByStringLiteral {
 }
 
 extension Origin: CustomStringConvertible {
-    public var description: String { rawValue }
+    public var description: String { self.rawValue }
 }

@@ -1,9 +1,10 @@
+import Synchronization
+
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
 import Foundation
 #endif
-import Synchronization
 
 /// A collaborative document: the root container for the CRDT text state.
 ///
@@ -39,7 +40,7 @@ public final class YDoc: Sendable {
 
     /// Returns the top-level text type under `name` (analogue of Yjs `getText`).
     public func text(_ name: String) -> YText {
-        YText(doc: self, handle: engine.textHandle(name))
+        YText(doc: self, handle: self.engine.textHandle(name))
     }
 
     /// Runs `body` inside a single transaction, bundling all edits into one
@@ -47,9 +48,9 @@ public final class YDoc: Sendable {
     /// `onUpdate` listeners.
     @discardableResult
     public func transact<T>(origin: Origin? = nil, _ body: (YTransaction) -> T) -> T {
-        sync.withLock { _ in
-            let txn = engine.beginTransaction(origin: origin, writable: true)
-            defer { engine.endTransaction(txn) }
+        self.sync.withLock { _ in
+            let txn = self.engine.beginTransaction(origin: origin, writable: true)
+            defer { self.engine.endTransaction(txn) }
             return body(txn)
         }
     }
@@ -57,30 +58,30 @@ public final class YDoc: Sendable {
     /// Throwing variant of `transact(origin:_:)`.
     @discardableResult
     public func transact<T>(origin: Origin? = nil, _ body: (YTransaction) throws -> T) throws -> T {
-        try sync.withLock { _ in
-            let txn = engine.beginTransaction(origin: origin, writable: true)
-            defer { engine.endTransaction(txn) }
+        try self.sync.withLock { _ in
+            let txn = self.engine.beginTransaction(origin: origin, writable: true)
+            defer { self.engine.endTransaction(txn) }
             return try body(txn)
         }
     }
 
     /// Subscribes to locally-produced updates. Send only these to the backend to
-    /// avoid echo loops (requirements §9.3). Callbacks fire outside the txn lock.
+    /// avoid echo loops (requirements §9.3). Callbacks fire during commit.
     @discardableResult
     public func onUpdate(_ callback: @escaping @Sendable (Data, Origin?) -> Void) -> YSubscription {
         // Serialize with transactions so registration never races a live txn.
-        sync.withLock { _ in engine.onUpdate(callback) }
+        self.sync.withLock { _ in self.engine.onUpdate(callback) }
     }
 
     /// Runs `body` while holding the document's transaction lock. Used by stateful
     /// helpers (e.g. `UndoManager`) whose operations open their own transaction and
     /// must not race the document's transactions.
     func performExclusively<T>(_ body: () -> T) -> T {
-        sync.withLock { _ in body() }
+        self.sync.withLock { _ in body() }
     }
 
     /// Releases the resident document.
-    public func destroy() { engine.destroy() }
+    public func destroy() { self.engine.destroy() }
 }
 
 // MARK: - Synchronization & encoding (requirements §4.3)
@@ -89,17 +90,17 @@ extension YDoc {
     /// Encodes the document state as an update. With `sv`, only the difference
     /// the peer is missing is written.
     public func encodeStateAsUpdate(_ txn: YTransaction, since sv: StateVector? = nil) -> Data {
-        engine.encodeStateAsUpdate(in: txn, since: sv)
+        self.engine.encodeStateAsUpdate(in: txn, since: sv)
     }
 
     /// Encodes the current state vector (`client -> clock`).
     public func encodeStateVector(_ txn: YTransaction) -> StateVector {
-        engine.encodeStateVector(in: txn)
+        self.engine.encodeStateVector(in: txn)
     }
 
     /// Applies a remote update. `origin` marks the source (e.g. remote) so
     /// `onUpdate` listeners can skip echoing it back.
     public func applyUpdate(_ txn: YTransaction, _ update: Data, origin: Origin? = nil) {
-        engine.applyUpdate(in: txn, update, origin: origin)
+        self.engine.applyUpdate(in: txn, update, origin: origin)
     }
 }

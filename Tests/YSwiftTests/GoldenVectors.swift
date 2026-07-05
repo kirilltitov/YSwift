@@ -1,6 +1,7 @@
-import Testing
 import Foundation
 import Synchronization
+import Testing
+
 @testable import YSwift
 
 // MARK: - Fixture model (mirrors fixtures/generate.mjs output)
@@ -167,7 +168,8 @@ enum Golden {
             switch o.op {
             case "insert": text.insert(txn, at: o.index!, o.text!, attributes: attributes(o.attributes))
             case "delete": text.delete(txn, at: o.index!, length: o.length!)
-            case "format": text.format(txn, at: o.index!, length: o.length!, attributes: attributes(o.attributes) ?? [:])
+            case "format":
+                text.format(txn, at: o.index!, length: o.length!, attributes: attributes(o.attributes) ?? [:])
             default: Issue.record("unknown op: \(o.op)")
             }
         }
@@ -175,7 +177,10 @@ enum Golden {
 
     /// Parses a Yjs `toDelta` JSON string into `[Delta]` (insert ops only).
     static func parseDelta(_ json: String) throws -> [Delta] {
-        struct Op: Decodable { let insert: YValue?; let attributes: [String: YValue]? }
+        struct Op: Decodable {
+            let insert: YValue?
+            let attributes: [String: YValue]?
+        }
         let ops = try JSONDecoder().decode([Op].self, from: Data(json.utf8))
         return ops.compactMap { op in op.insert.map { .insert($0, attributes: op.attributes) } }
     }
@@ -216,8 +221,11 @@ struct GoldenVectorTests {
             doc.transact { txn in Golden.replay(f.ops, into: text, txn) }
 
             doc.transact { txn in
-                #expect(doc.encodeStateAsUpdate(txn).base64EncodedString() == f.update, "\(f.name): update bytes differ")
-                #expect(doc.encodeStateVector(txn).data.base64EncodedString() == f.stateVector, "\(f.name): state vector bytes differ")
+                #expect(
+                    doc.encodeStateAsUpdate(txn).base64EncodedString() == f.update, "\(f.name): update bytes differ")
+                #expect(
+                    doc.encodeStateVector(txn).data.base64EncodedString() == f.stateVector,
+                    "\(f.name): state vector bytes differ")
                 #expect(text.string(txn) == f.text, "\(f.name): text differs")
             }
         }
@@ -316,8 +324,8 @@ struct GoldenVectorTests {
             let diff = YUpdate.diff(full, since: sv)
             let doc = YDoc(clientID: 7)
             doc.transact { txn in
-                doc.applyUpdate(txn, base) // state == sinceStateVector
-                doc.applyUpdate(txn, diff) // catch up
+                doc.applyUpdate(txn, base)  // state == sinceStateVector
+                doc.applyUpdate(txn, diff)  // catch up
             }
             #expect(doc.transact { txn in doc.text(suite.meta.key).string(txn) } == f.text, "\(f.name)")
         }
@@ -354,7 +362,9 @@ struct GoldenVectorTests {
             fromJS.transact { txn in fromJS.applyUpdate(txn, update) }
             let expected = try Golden.parseDelta(f.deltaJSON)
             #expect(fromJS.transact { txn in fromJS.text(suite.meta.key).string(txn) } == f.text, "\(f.name): text")
-            #expect(fromJS.transact { txn in fromJS.text(suite.meta.key).toDelta(txn) } == expected, "\(f.name): delta (JS update)")
+            #expect(
+                fromJS.transact { txn in fromJS.text(suite.meta.key).toDelta(txn) } == expected,
+                "\(f.name): delta (JS update)")
 
             // The port replaying the same ops yields a structurally-equal delta.
             let native = YDoc(clientID: f.clientID)

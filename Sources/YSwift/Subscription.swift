@@ -6,17 +6,17 @@ public final class YSubscription: Sendable {
     private let state: Mutex<(@Sendable () -> Void)?>
 
     init(_ onCancel: @escaping @Sendable () -> Void) {
-        state = Mutex(onCancel)
+        self.state = Mutex(onCancel)
     }
 
     /// Cancels the subscription. Idempotent; safe to call more than once.
     public func cancel() {
-        let handler = state.withLock { (h: inout (@Sendable () -> Void)?) -> (@Sendable () -> Void)? in
+        let handler = self.state.withLock { (h: inout (@Sendable () -> Void)?) -> (@Sendable () -> Void)? in
             defer { h = nil }
             return h
         }
         handler?()
     }
 
-    deinit { cancel() }
+    deinit { self.cancel() }
 }

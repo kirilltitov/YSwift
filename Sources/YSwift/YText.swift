@@ -14,38 +14,38 @@ public final class YText: Sendable {
 
     /// Inserts `string` at `index`, optionally with formatting `attributes`.
     public func insert(_ txn: YTransaction, at index: Int, _ string: String, attributes: Attributes? = nil) {
-        doc.engine.textInsert(in: txn, handle, at: index, string, attributes: attributes)
+        self.doc.engine.textInsert(in: txn, self.handle, at: index, string, attributes: attributes)
     }
 
     /// Deletes `length` code units starting at `index`.
     public func delete(_ txn: YTransaction, at index: Int, length: Int) {
-        doc.engine.textDelete(in: txn, handle, at: index, length: length)
+        self.doc.engine.textDelete(in: txn, self.handle, at: index, length: length)
     }
 
     /// Applies formatting `attributes` to the `length` code units at `index`.
     public func format(_ txn: YTransaction, at index: Int, length: Int, attributes: Attributes) {
-        doc.engine.textFormat(in: txn, handle, at: index, length: length, attributes: attributes)
+        self.doc.engine.textFormat(in: txn, self.handle, at: index, length: length, attributes: attributes)
     }
 
     /// The plain-text contents (no formatting).
     public func string(_ txn: YTransaction) -> String {
-        doc.engine.textString(in: txn, handle)
+        self.doc.engine.textString(in: txn, self.handle)
     }
 
     /// The length in UTF-16 code units.
     public func length(_ txn: YTransaction) -> Int {
-        doc.engine.textLength(in: txn, handle)
+        self.doc.engine.textLength(in: txn, self.handle)
     }
 
     /// The contents as a Quill-style delta (for materializing to
     /// `content` / `format_data`).
     public func toDelta(_ txn: YTransaction) -> [Delta] {
-        doc.engine.textDelta(in: txn, handle)
+        self.doc.engine.textDelta(in: txn, self.handle)
     }
 
-    /// Observes changes to this text. Callbacks fire outside the txn lock.
+    /// Observes changes to this text. Callbacks fire during commit.
     @discardableResult
     public func observe(_ callback: @escaping @Sendable (YTextEvent) -> Void) -> YSubscription {
-        doc.performExclusively { doc.engine.observeText(handle, callback) }
+        self.doc.performExclusively { self.doc.engine.observeText(self.handle, callback) }
     }
 }

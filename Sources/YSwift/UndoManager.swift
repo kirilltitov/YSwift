@@ -11,38 +11,39 @@ public final class UndoManager {
     private let handle: AnyObject?
 
     public init(_ text: YText, trackedOrigins: Set<Origin> = [], captureTimeout: Duration = .milliseconds(500)) {
-        doc = text.doc
+        self.doc = text.doc
         let parts = captureTimeout.components
-        let millis = UInt64(max(0, parts.seconds)) * 1000
+        let millis =
+            UInt64(max(0, parts.seconds)) * 1000
             + UInt64(max(0, parts.attoseconds) / 1_000_000_000_000_000)
-        handle = text.doc.performExclusively {
+        self.handle = text.doc.performExclusively {
             text.doc.engine.makeUndoManager(text.handle, trackedOrigins: trackedOrigins, captureTimeoutMillis: millis)
         }
     }
 
     public func undo() {
-        guard let handle else { return }
-        _ = doc.performExclusively { doc.engine.undoManagerUndo(handle) }
+        guard let handle = self.handle else { return }
+        _ = self.doc.performExclusively { self.doc.engine.undoManagerUndo(handle) }
     }
 
     public func redo() {
-        guard let handle else { return }
-        _ = doc.performExclusively { doc.engine.undoManagerRedo(handle) }
+        guard let handle = self.handle else { return }
+        _ = self.doc.performExclusively { self.doc.engine.undoManagerRedo(handle) }
     }
 
     /// Ensures the next change starts a new undo step (does not merge).
     public func stopCapturing() {
-        guard let handle else { return }
-        doc.performExclusively { doc.engine.undoManagerStopCapturing(handle) }
+        guard let handle = self.handle else { return }
+        self.doc.performExclusively { self.doc.engine.undoManagerStopCapturing(handle) }
     }
 
     public var canUndo: Bool {
-        guard let handle else { return false }
-        return doc.performExclusively { doc.engine.undoManagerCanUndo(handle) }
+        guard let handle = self.handle else { return false }
+        return self.doc.performExclusively { self.doc.engine.undoManagerCanUndo(handle) }
     }
 
     public var canRedo: Bool {
-        guard let handle else { return false }
-        return doc.performExclusively { doc.engine.undoManagerCanRedo(handle) }
+        guard let handle = self.handle else { return false }
+        return self.doc.performExclusively { self.doc.engine.undoManagerCanRedo(handle) }
     }
 }

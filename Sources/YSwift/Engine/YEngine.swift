@@ -40,6 +40,9 @@ protocol YEngine: AnyObject, Sendable {
     func encodeStateVector(in txn: YTransaction) -> StateVector
     func applyUpdate(in txn: YTransaction, _ update: Data, origin: Origin?)
 
+    func stickyFromIndex(in txn: YTransaction, _ handle: TextHandle, index: Int, assoc: StickyIndex.Assoc) -> Data?
+    func stickyToIndex(in txn: YTransaction, _ raw: Data) -> Int?
+
     func onUpdate(_ callback: @escaping @Sendable (Data, Origin?) -> Void) -> YSubscription
     func observeText(_ handle: TextHandle, _ callback: @escaping @Sendable (YTextEvent) -> Void) -> YSubscription
 

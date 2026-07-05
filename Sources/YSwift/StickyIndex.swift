@@ -24,12 +24,13 @@ public struct StickyIndex: Sendable, Hashable {
 
     /// Creates a sticky position for `index` within `text`.
     public static func fromIndex(_ txn: YTransaction, _ text: YText, _ index: Int, assoc: Assoc = .after) -> StickyIndex {
-        fatalError("YSwift: StickyIndex.fromIndex is not implemented yet (Phase 1: yrs StickyIndex). See DECISIONS.md.")
+        StickyIndex(raw: txn.engine.stickyFromIndex(in: txn, text.handle, index: index, assoc: assoc) ?? Data())
     }
 
-    /// Resolves this sticky position to an absolute index in `doc`.
+    /// Resolves this sticky position to an absolute index in `doc` (-1 if it
+    /// can no longer be referenced).
     public func toIndex(_ txn: YTransaction, _ doc: YDoc) -> Int {
-        fatalError("YSwift: StickyIndex.toIndex is not implemented yet. See DECISIONS.md.")
+        txn.engine.stickyToIndex(in: txn, raw) ?? -1
     }
 
     /// The wire-compatible encoded form.

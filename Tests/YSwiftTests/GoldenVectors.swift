@@ -44,6 +44,7 @@ struct GoldenSuite: Codable {
         let description: String
         let clientID: UInt64
         let sinceStateVector: String
+        let base: String
         let full: String
         let diff: String
         let text: String
@@ -58,12 +59,27 @@ struct GoldenSuite: Codable {
         let text: String
     }
 
+    struct StickyFixture: Codable {
+        let name: String
+        let description: String
+        let clientID: UInt64
+        let baseOps: [GoldenOp]
+        let index: Int
+        let assoc: Int
+        let shiftOps: [GoldenOp]
+        let encoded: String
+        let resolvedBefore: Int
+        let resolvedAfter: Int
+        let finalText: String
+    }
+
     let meta: Meta
     let encode: [EncodeFixture]
     let merge: [MergeFixture]
     let converge: [ConvergeFixture]
     let diff: [DiffFixture]
     let incremental: [IncrementalFixture]
+    let sticky: [StickyFixture]
 }
 
 struct GoldenOp: Codable {
@@ -264,6 +280,53 @@ struct GoldenVectorTests {
             let mine = doc.transact { txn in text.toDelta(txn) }
             let expected = try Golden.parseDelta(f.deltaJSON)
             #expect(mine == expected, "\(f.name): toDelta differs\n  mine=\(mine)\n  exp=\(expected)")
+        }
+    }
+
+    @Test("YUpdate.merge reconstructs the merged text")
+    func mergeConformance() throws {
+        let suite = try Golden.loadSuite()
+        for f in suite.merge {
+            let inputs = try f.inputs.map { try #require(Data(base64Encoded: $0)) }
+            let merged = YUpdate.merge(inputs)
+            let doc = YDoc(clientID: 7)
+            doc.transact { txn in doc.applyUpdate(txn, merged) }
+            #expect(doc.transact { txn in doc.text(suite.meta.key).string(txn) } == f.text, "\(f.name)")
+        }
+    }
+
+    @Test("YUpdate.diff yields the missing delta atop a base state")
+    func diffConformance() throws {
+        let suite = try Golden.loadSuite()
+        for f in suite.diff {
+            let full = try #require(Data(base64Encoded: f.full))
+            let base = try #require(Data(base64Encoded: f.base))
+            let sv = StateVector(data: try #require(Data(base64Encoded: f.sinceStateVector)))
+            let diff = YUpdate.diff(full, since: sv)
+            let doc = YDoc(clientID: 7)
+            doc.transact { txn in
+                doc.applyUpdate(txn, base) // state == sinceStateVector
+                doc.applyUpdate(txn, diff) // catch up
+            }
+            #expect(doc.transact { txn in doc.text(suite.meta.key).string(txn) } == f.text, "\(f.name)")
+        }
+    }
+
+    @Test("StickyIndex encodes byte-compatibly with yjs and resolves through edits")
+    func stickyConformance() throws {
+        let suite = try Golden.loadSuite()
+        for f in suite.sticky {
+            let doc = YDoc(clientID: f.clientID)
+            let text = doc.text(suite.meta.key)
+            doc.transact { txn in Golden.replay(f.baseOps, into: text, txn) }
+
+            let assoc: StickyIndex.Assoc = f.assoc < 0 ? .before : .after
+            let sticky = doc.transact { txn in StickyIndex.fromIndex(txn, text, f.index, assoc: assoc) }
+            #expect(sticky.encode().base64EncodedString() == f.encoded, "\(f.name): encoded sticky differs")
+            #expect(doc.transact { txn in sticky.toIndex(txn, doc) } == f.resolvedBefore, "\(f.name): resolvedBefore")
+
+            doc.transact { txn in Golden.replay(f.shiftOps, into: text, txn) }
+            #expect(doc.transact { txn in sticky.toIndex(txn, doc) } == f.resolvedAfter, "\(f.name): resolvedAfter")
         }
     }
 }

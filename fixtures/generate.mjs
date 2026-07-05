@@ -78,10 +78,12 @@ function diffFixture(name, description, clientID, opsA, opsB) {
   const doc = new Y.Doc(); doc.clientID = clientID
   applyOps(doc, opsA)
   const sinceSV = Y.encodeStateVector(doc)
+  const base = Y.encodeStateAsUpdate(doc)
   applyOps(doc, opsB)
   return {
     name, description, clientID,
     sinceStateVector: b64(sinceSV),
+    base: b64(base),
     full: b64(Y.encodeStateAsUpdate(doc)),
     diff: b64(Y.encodeStateAsUpdate(doc, sinceSV)),
     text: doc.getText(KEY).toString(),
@@ -109,6 +111,25 @@ function incrementalFixture(name, description, clientID, transactions) {
     doc.transact(() => { for (const o of ops) applyOp1(t, o) })
   }
   return { name, description, clientID, transactions, updates, text: t.toString() }
+}
+
+/** Sticky (relative) position: encode it, resolve before/after a shifting edit. */
+function stickyFixture(name, description, clientID, baseOps, index, assoc, shiftOps) {
+  const doc = new Y.Doc()
+  doc.clientID = clientID
+  const t = applyOps(doc, baseOps)
+  const rel = Y.createRelativePositionFromTypeIndex(t, index, assoc)
+  const encoded = b64(Y.encodeRelativePosition(rel))
+  const before = Y.createAbsolutePositionFromRelativePosition(rel, doc)
+  applyOps(doc, shiftOps)
+  const after = Y.createAbsolutePositionFromRelativePosition(rel, doc)
+  return {
+    name, description, clientID, baseOps, index, assoc, shiftOps,
+    encoded,
+    resolvedBefore: before ? before.index : -1,
+    resolvedAfter: after ? after.index : -1,
+    finalText: t.toString(),
+  }
 }
 
 const encode = [
@@ -165,9 +186,16 @@ const incremental = [
   ]),
 ]
 
+const sticky = [
+  stickyFixture('mid_after', 'sticky at index 3 (assoc after) in "hello", then insert "XY" at 0', 1001,
+    [{ op: 'insert', index: 0, text: 'hello' }], 3, 0, [{ op: 'insert', index: 0, text: 'XY' }]),
+  stickyFixture('start_before', 'sticky at index 2 (assoc before) in "world", then insert "!" at 0', 2002,
+    [{ op: 'insert', index: 0, text: 'world' }], 2, -1, [{ op: 'insert', index: 0, text: '!' }]),
+]
+
 const out = {
   meta: { yjsVersion: YJS_VERSION, format: 'v1', key: KEY, generatedBy: 'fixtures/generate.mjs' },
-  encode, merge, converge, diff, incremental,
+  encode, merge, converge, diff, incremental, sticky,
 }
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -175,5 +203,5 @@ const dest = join(here, '..', 'Tests', 'YSwiftTests', 'Fixtures')
 mkdirSync(dest, { recursive: true })
 writeFileSync(join(dest, 'golden_v13_6_31.json'), JSON.stringify(out, null, 2) + '\n')
 
-const count = encode.length + merge.length + converge.length + diff.length + incremental.length
+const count = encode.length + merge.length + converge.length + diff.length + incremental.length + sticky.length
 console.log(`wrote ${count} fixtures (yjs ${YJS_VERSION}) -> Tests/YSwiftTests/Fixtures/golden_v13_6_31.json`)

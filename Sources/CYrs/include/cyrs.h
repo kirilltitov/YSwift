@@ -37,6 +37,14 @@ uint8_t *ytxn_state_as_update_v1(CYrsTxn *txn, const uint8_t *sv, size_t sv_len,
 uint8_t *ytxn_state_vector_v1(CYrsTxn *txn, size_t *out_len);
 bool ytxn_apply_update_v1(CYrsTxn *txn, const uint8_t *update, size_t len);
 
+/* --- Doc-less update ops (merge / diff) --- */
+uint8_t *ymerge_updates_v1(const uint8_t *concat, size_t concat_len, const size_t *lens, size_t count, size_t *out_len);
+uint8_t *ydiff_update_v1(const uint8_t *update, size_t update_len, const uint8_t *sv, size_t sv_len, size_t *out_len);
+
+/* --- Sticky index (relative position; yjs-compatible v1 encoding) --- */
+uint8_t *ysticky_from_index(CYrsTxn *txn, const uint8_t *name, size_t name_len, uint32_t index, int8_t assoc, size_t *out_len);
+int64_t ysticky_to_index(CYrsTxn *txn, const uint8_t *sticky, size_t sticky_len);
+
 /* --- Update observers ---
  * The callback fires synchronously during commit with the v1 incremental update
  * and the committing transaction's origin (null/0 when unset). Buffers are valid

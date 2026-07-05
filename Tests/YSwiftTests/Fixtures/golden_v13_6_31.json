@@ -195,6 +195,7 @@
       "description": "diff (delta) after appending to an earlier state",
       "clientID": 1001,
       "sinceStateVector": "AekHBQ==",
+      "base": "AQHpBwAEAQdjb250ZW50BUhlbGxvAA==",
       "full": "AQHpBwAEAQdjb250ZW50DEhlbGxvLCB3b3JsZAA=",
       "diff": "AQHpBwWE6QcEBywgd29ybGQA",
       "text": "Hello, world"
@@ -289,6 +290,58 @@
         "AQLpBwVG6QcABGJvbGQEdHJ1ZYbpBwQEYm9sZARudWxsAA=="
       ],
       "text": "title"
+    }
+  ],
+  "sticky": [
+    {
+      "name": "mid_after",
+      "description": "sticky at index 3 (assoc after) in \"hello\", then insert \"XY\" at 0",
+      "clientID": 1001,
+      "baseOps": [
+        {
+          "op": "insert",
+          "index": 0,
+          "text": "hello"
+        }
+      ],
+      "index": 3,
+      "assoc": 0,
+      "shiftOps": [
+        {
+          "op": "insert",
+          "index": 0,
+          "text": "XY"
+        }
+      ],
+      "encoded": "AOkHAwA=",
+      "resolvedBefore": 3,
+      "resolvedAfter": 5,
+      "finalText": "XYhello"
+    },
+    {
+      "name": "start_before",
+      "description": "sticky at index 2 (assoc before) in \"world\", then insert \"!\" at 0",
+      "clientID": 2002,
+      "baseOps": [
+        {
+          "op": "insert",
+          "index": 0,
+          "text": "world"
+        }
+      ],
+      "index": 2,
+      "assoc": -1,
+      "shiftOps": [
+        {
+          "op": "insert",
+          "index": 0,
+          "text": "!"
+        }
+      ],
+      "encoded": "ANIPAUE=",
+      "resolvedBefore": 2,
+      "resolvedAfter": 3,
+      "finalText": "!world"
     }
   ]
 }

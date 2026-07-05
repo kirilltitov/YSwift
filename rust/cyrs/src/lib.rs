@@ -25,8 +25,9 @@ use yrs::types::Attrs;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
-    Any, ClientID, Doc, GetString, OffsetKind, Options, Origin, Out, ReadTxn, StateVector,
-    Subscription, Text, Transact, TransactionMut, Update, UpdateEvent, WriteTxn,
+    diff_updates_v1, merge_updates_v1, Any, Assoc, ClientID, Doc, GetString, IndexedSequence,
+    OffsetKind, Options, Origin, Out, ReadTxn, StateVector, StickyIndex, Subscription, Text,
+    Transact, TransactionMut, Update, UpdateEvent, WriteTxn,
 };
 
 pub const CYRS_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -330,6 +331,105 @@ pub unsafe extern "C" fn ytxn_with_origin(
     let o = Origin::from(as_slice(origin, origin_len));
     let txn: TransactionMut<'static> = std::mem::transmute((*doc).transact_mut_with(o));
     Box::into_raw(Box::new(txn))
+}
+
+// ---- Doc-less update ops ----------------------------------------------------
+
+/// Merges v1 updates (concatenated into `concat`, split by `lens`) into one v1
+/// update. Returns null on decode error.
+#[no_mangle]
+pub unsafe extern "C" fn ymerge_updates_v1(
+    concat: *const u8,
+    concat_len: usize,
+    lens: *const usize,
+    count: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
+    let data = as_slice(concat, concat_len);
+    let lens = if lens.is_null() || count == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(lens, count)
+    };
+    let mut updates: Vec<&[u8]> = Vec::with_capacity(count);
+    let mut off = 0usize;
+    for &l in lens {
+        if off + l > data.len() {
+            *out_len = 0;
+            return std::ptr::null_mut();
+        }
+        updates.push(&data[off..off + l]);
+        off += l;
+    }
+    match merge_updates_v1(updates) {
+        Ok(v) => bytes_out(v, out_len),
+        Err(_) => {
+            *out_len = 0;
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Returns the part of `update` missing from a peer at `state_vector` (v1).
+#[no_mangle]
+pub unsafe extern "C" fn ydiff_update_v1(
+    update: *const u8,
+    update_len: usize,
+    sv: *const u8,
+    sv_len: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
+    match diff_updates_v1(as_slice(update, update_len), as_slice(sv, sv_len)) {
+        Ok(v) => bytes_out(v, out_len),
+        Err(_) => {
+            *out_len = 0;
+            std::ptr::null_mut()
+        }
+    }
+}
+
+// ---- Sticky index (relative position) --------------------------------------
+
+/// Creates a sticky index at `index` in the named text (assoc: 0 = after, <0 =
+/// before) and returns its v1 encoding (yjs relative-position compatible). Null
+/// if the index is out of range.
+#[no_mangle]
+pub unsafe extern "C" fn ysticky_from_index(
+    txn: *mut TransactionMut<'static>,
+    name: *const u8,
+    name_len: usize,
+    index: u32,
+    assoc: i8,
+    out_len: *mut usize,
+) -> *mut u8 {
+    let txn = &mut *txn;
+    let text = txn.get_or_insert_text(as_str(name, name_len));
+    let assoc = if assoc < 0 { Assoc::Before } else { Assoc::After };
+    match text.sticky_index(&*txn, index, assoc) {
+        Some(sticky) => bytes_out(sticky.encode_v1(), out_len),
+        None => {
+            *out_len = 0;
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Resolves a v1-encoded sticky index to an absolute index in the txn's doc.
+/// Returns -1 if it cannot be decoded or referenced.
+#[no_mangle]
+pub unsafe extern "C" fn ysticky_to_index(
+    txn: *mut TransactionMut<'static>,
+    sticky: *const u8,
+    sticky_len: usize,
+) -> i64 {
+    let txn = &mut *txn;
+    match StickyIndex::decode_v1(as_slice(sticky, sticky_len)) {
+        Ok(s) => match s.get_offset(&*txn) {
+            Some(off) => off.index as i64,
+            None => -1,
+        },
+        Err(_) => -1,
+    }
 }
 
 // ---- Memory -----------------------------------------------------------------

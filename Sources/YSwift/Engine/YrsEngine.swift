@@ -197,6 +197,28 @@ final class YrsEngine: YEngine, @unchecked Sendable {
         _ = bytes.withUnsafeBufferPointer { ytxn_apply_update_v1(t, $0.baseAddress, $0.count) }
     }
 
+    // MARK: Sticky index
+
+    func stickyFromIndex(in txn: YTransaction, _ handle: TextHandle, index: Int, assoc: StickyIndex.Assoc) -> Data? {
+        guard let t = txnPtr(txn) else { return nil }
+        let name = Array(handle.name.utf8)
+        let a: Int8 = assoc == .before ? -1 : 0
+        var outLen = 0
+        let ptr = name.withUnsafeBufferPointer { n in
+            ysticky_from_index(t, n.baseAddress, n.count, UInt32(index), a, &outLen)
+        }
+        guard let ptr else { return nil }
+        let data = consumeBytes(ptr, outLen)
+        return data.isEmpty ? nil : data
+    }
+
+    func stickyToIndex(in txn: YTransaction, _ raw: Data) -> Int? {
+        guard let t = txnPtr(txn) else { return nil }
+        let bytes = Array(raw)
+        let resolved = bytes.withUnsafeBufferPointer { ysticky_to_index(t, $0.baseAddress, $0.count) }
+        return resolved < 0 ? nil : Int(resolved)
+    }
+
     // MARK: Observers
 
     func onUpdate(_ callback: @escaping @Sendable (Data, Origin?) -> Void) -> YSubscription {

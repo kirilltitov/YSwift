@@ -24,6 +24,10 @@ let package = Package(
             ],
             linkerSettings: [
                 .unsafeFlags(["-Lrust/cyrs/target/release", "-lcyrs"]),
+                // A Rust staticlib pulls these in on Linux; ignored on Apple platforms.
+                .linkedLibrary("pthread", .when(platforms: [.linux])),
+                .linkedLibrary("dl", .when(platforms: [.linux])),
+                .linkedLibrary("m", .when(platforms: [.linux])),
             ]
         ),
         .testTarget(

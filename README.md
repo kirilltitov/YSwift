@@ -25,9 +25,16 @@ gates both phases: Phase 2 is done when it passes exactly what Phase 1 passes.
 
 ## Current status
 
-**Scaffold.** The public API is defined and compiles; the engine is a stub
-(`UnimplementedEngine`) that traps on any operation touching CRDT state. Next
-step: wire `YrsEngine` over `yffi`.
+**Phase 1 complete** for the required subset. `YrsEngine` — a facade over Rust
+`yrs` via the in-repo `cyrs` C ABI — backs the full §4 API: document + text
+CRUD, `applyUpdate` / `encodeStateAsUpdate` / `encodeStateVector`, `onUpdate`
+with transaction origins, `toDelta`, `YUpdate.merge` / `diff`, `StickyIndex`,
+`Awareness`, `UndoManager`, and `text.observe`. A 25-test conformance suite
+verifies byte-for-byte compatibility with **yjs v13.6.31** (updates, state
+vectors, incremental updates, relative positions) plus structural `toDelta` and
+behavioral undo/awareness/observe checks.
+
+Phase 2 (a pure-Swift engine behind the same frozen API) is future work.
 
 ## Build
 

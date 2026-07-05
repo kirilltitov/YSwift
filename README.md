@@ -31,9 +31,15 @@ step: wire `YrsEngine` over `yffi`.
 
 ## Build
 
+The Swift package links a Rust static library (`rust/cyrs`, a C-ABI facade over
+`yrs`), so the staticlib must be built first. A Makefile chains the steps:
+
 ```sh
-swift build
-swift test
+make build      # cargo build --release (cyrs) + swift build
+make test       # + swift test (full conformance suite)
+make rust-test  # cross-check yrs against the golden vectors
+make fixtures   # regenerate golden vectors from pinned JS-Yjs
 ```
 
-Requires a Swift 6.3+ toolchain.
+Prerequisites: a Swift 6.3+ toolchain and a Rust toolchain (`rustup`). Without
+`make`, run `cargo build --release` in `rust/cyrs` before `swift build`/`swift test`.

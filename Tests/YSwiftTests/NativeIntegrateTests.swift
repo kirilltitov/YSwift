@@ -95,6 +95,19 @@ struct NativeIntegrateTests {
         }
     }
 
+    @Test("multi-client state vector is byte-identical (clients descending)")
+    func multiClientStateVector() throws {
+        let fixtures = try Self.fixtures()
+        // merged: two clients -> SV lists client 2 then client 1 (descending).
+        let merged = NativeDoc()
+        try merged.applyUpdate(self.bytes(fixtures.merge[0].merged))
+        #expect(merged.encodeStateVector() == (try self.bytes("AgIFAQY=")), "merged SV")
+        // converge: two clients applied in sequence.
+        let converged = NativeDoc()
+        for update in fixtures.converge[0].updates { try converged.applyUpdate(self.bytes(update)) }
+        #expect(converged.encodeStateVector() == (try self.bytes("AgIDAQM=")), "converge SV")
+    }
+
     @Test("concurrent inserts converge to the same text in any application order")
     func converge() throws {
         for fixture in try Self.fixtures().converge {

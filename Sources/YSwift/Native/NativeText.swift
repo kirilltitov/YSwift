@@ -218,7 +218,11 @@ final class NativeText {
 
     private func insertAttributes(_ pos: TextPosition, _ attributes: [String: String]) -> [String: String] {
         var negated: [String: String] = [:]
-        for (key, value) in attributes {
+        // Sorted for deterministic output when several attributes are set at once
+        // (the public `Attributes` dictionary loses yjs's object-key insertion order,
+        // so multi-key format is a stable semantic — not byte — match to yjs).
+        for key in attributes.keys.sorted() {
+            let value = attributes[key]!
             let current = pos.attributes[key]
             if !equalAttrs(current, value) {
                 negated[key] = current ?? "null"
@@ -238,8 +242,8 @@ final class NativeText {
             if !right.deleted, let format = formatContent(right) { negated.removeValue(forKey: format.key) }
             pos.forward()
         }
-        for (key, value) in negated {
-            let item = self.makeItem(pos, content: .format(key: key, valueJSON: value))
+        for key in negated.keys.sorted() {
+            let item = self.makeItem(pos, content: .format(key: key, valueJSON: negated[key]!))
             pos.right = item
             pos.forward()
         }

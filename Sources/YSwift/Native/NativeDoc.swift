@@ -5,6 +5,8 @@
 // yet present are dropped for now (the pending buffer is M4); complete updates —
 // which every golden vector is — integrate fully.
 
+import Synchronization
+
 /// One client's not-yet-integrated structs plus a cursor, matching the
 /// `{ i, refs }` records in yjs `readClientsStructRefs`.
 private final class ClientRefs {
@@ -43,21 +45,30 @@ final class NativeDoc {
     private var txnDepth = 0
     private var txnBeforeState: [UInt64: UInt64] = [:]
     private var txnOrigin: Origin?
-    private var updateHandlers: [(id: Int, handler: ([UInt8], Origin?) -> Void)] = []
-    private var nextHandlerID = 0
+
+    /// Update handlers, behind their own lock so `removeUpdateHandler` (called from
+    /// a `YSubscription.cancel()` that can't reach `YDoc.sync`) never races
+    /// registration or commit-time iteration.
+    private struct HandlerBook {
+        var next = 0
+        var list: [(id: Int, handler: @Sendable ([UInt8], Origin?) -> Void)] = []
+    }
+    private let handlers = Mutex(HandlerBook())
 
     /// Registers a handler fired with each transaction's v1 update (yjs `on('update')`).
     /// Returns an id for `removeUpdateHandler`.
     @discardableResult
-    func onUpdate(_ handler: @escaping ([UInt8], Origin?) -> Void) -> Int {
-        let id = self.nextHandlerID
-        self.nextHandlerID += 1
-        self.updateHandlers.append((id, handler))
-        return id
+    func onUpdate(_ handler: @escaping @Sendable ([UInt8], Origin?) -> Void) -> Int {
+        self.handlers.withLock { book in
+            let id = book.next
+            book.next += 1
+            book.list.append((id, handler))
+            return id
+        }
     }
 
     func removeUpdateHandler(_ id: Int) {
-        self.updateHandlers.removeAll { $0.id == id }
+        self.handlers.withLock { $0.list.removeAll { $0.id == id } }
     }
 
     /// Opens (or joins) a transaction. Only the outermost `begin`/`commit` pair
@@ -83,9 +94,12 @@ final class NativeDoc {
         let origin = self.txnOrigin
         self.txnOrigin = nil
 
-        guard !self.updateHandlers.isEmpty else { return }
+        // Snapshot handlers under the lock, then invoke them WITHOUT holding it (a
+        // handler may register/cancel or open a transaction — the lock isn't reentrant).
+        let snapshot = self.handlers.withLock { $0.list }
+        guard !snapshot.isEmpty else { return }
         if let update = self.encodeTransactionUpdate(beforeState: self.txnBeforeState, deletes: deletes) {
-            for entry in self.updateHandlers { entry.handler(update, origin) }
+            for entry in snapshot { entry.handler(update, origin) }
         }
     }
 

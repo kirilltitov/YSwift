@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 
 @testable import YSwift
@@ -125,15 +126,15 @@ struct NativeTextTests {
         for fixture in try self.fixtures().incremental {
             let doc = NativeDoc(clientID: fixture.clientID)
             let text = doc.text(try self.rootName(self.bytes(fixture.updates[0])))
-            var emitted: [[UInt8]] = []
-            doc.onUpdate { update, _ in emitted.append(update) }
+            let emitted = Mutex<[[UInt8]]>([])
+            doc.onUpdate { update, _ in emitted.withLock { $0.append(update) } }
             for transaction in fixture.transactions {
                 doc.transact {
                     for op in transaction { self.apply(op, to: text) }
                 }
             }
             let expected = try fixture.updates.map(self.bytes)
-            #expect(emitted == expected, "\(fixture.name): emitted \(emitted.count) updates")
+            #expect(emitted.withLock { $0 } == expected, "\(fixture.name): emitted updates")
             #expect(text.string == fixture.text, "\(fixture.name): text")
         }
     }

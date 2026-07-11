@@ -53,23 +53,15 @@ final class NativeStore {
         return last.id.clock + last.length
     }
 
-    /// `(client, clock)` pairs for the current state vector, in the order clients
-    /// were first inserted (matches JS `Map` iteration for byte-compatible output).
+    /// `(client, clock)` pairs for the current state vector, sorted DESCENDING by
+    /// client id — matching yjs `writeStateVector` (`sort((a, b) => b[0] - a[0])`)
+    /// for byte-identical output.
     func stateVector() -> [(client: UInt64, clock: UInt64)] {
-        self.insertionOrder.map { (client: $0, clock: self.getState($0)) }
+        self.clients.keys.sorted(by: >).map { (client: $0, clock: self.getState($0)) }
     }
 
-    /// Client ids in first-insertion order (JS `Map` semantics).
-    private(set) var insertionOrder: [UInt64] = []
-
     func addStruct(_ struct: Struct) {
-        let client = `struct`.id.client
-        if clients[client] == nil {
-            clients[client] = [`struct`]
-            self.insertionOrder.append(client)
-        } else {
-            clients[client]!.append(`struct`)
-        }
+        clients[`struct`.id.client, default: []].append(`struct`)
     }
 
     /// Binary search for the struct covering `clock` (ported from `findIndexSS`,

@@ -63,6 +63,12 @@ public final class YDoc: Sendable {
         YMap(doc: self, name: name)
     }
 
+    /// Returns the top-level XML fragment under `name` (analogue of Yjs
+    /// `getXmlFragment`). Container types require the native engine.
+    public func xmlFragment(_ name: String) -> YXmlFragment {
+        YXmlFragment(doc: self, name: name)
+    }
+
     /// Runs `body` inside a single transaction, bundling all edits into one
     /// update. `origin` is attached to the transaction and forwarded to
     /// `onUpdate` listeners.

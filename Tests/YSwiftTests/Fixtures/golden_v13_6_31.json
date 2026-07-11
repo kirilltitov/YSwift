@@ -585,5 +585,101 @@
       "stateVector": "AekHAg==",
       "update": "AQLpBwAhAQdjb250ZW50AWEBKAEHY29udGVudAFiAX0CAekHAQAB"
     }
+  ],
+  "xml": [
+    {
+      "name": "xml_simple",
+      "description": "one element with an attribute and a text child",
+      "clientID": 1001,
+      "nodes": [
+        {
+          "tag": "p",
+          "attrs": [
+            [
+              "class",
+              "intro"
+            ]
+          ],
+          "children": [
+            {
+              "text": "Hello"
+            }
+          ]
+        }
+      ],
+      "xml": "<p class=\"intro\">Hello</p>",
+      "stateVector": "AekHCA==",
+      "update": "AQTpBwAHAQdjb250ZW50AwFwBwDpBwAGBADpBwEFSGVsbG8oAOkHAAVjbGFzcwF3BWludHJvAA=="
+    },
+    {
+      "name": "xml_text_child",
+      "description": "element with only text",
+      "clientID": 1001,
+      "nodes": [
+        {
+          "tag": "span",
+          "children": [
+            {
+              "text": "hi"
+            }
+          ]
+        }
+      ],
+      "xml": "<span>hi</span>",
+      "stateVector": "AekHBA==",
+      "update": "AQPpBwAHAQdjb250ZW50AwRzcGFuBwDpBwAGBADpBwECaGkA"
+    },
+    {
+      "name": "xml_nested",
+      "description": "div with two paragraph children",
+      "clientID": 1001,
+      "nodes": [
+        {
+          "tag": "div",
+          "children": [
+            {
+              "tag": "p",
+              "children": [
+                {
+                  "text": "a"
+                }
+              ]
+            },
+            {
+              "tag": "p",
+              "children": [
+                {
+                  "text": "b"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "xml": "<div><p>a</p><p>b</p></div>",
+      "stateVector": "AekHBw==",
+      "update": "AQfpBwAHAQdjb250ZW50AwNkaXYHAOkHAAMBcAcA6QcBBgQA6QcCAWGH6QcBAwFwBwDpBwQGBADpBwUBYgA="
+    },
+    {
+      "name": "xml_siblings",
+      "description": "fragment with an element then a bare text node",
+      "clientID": 1001,
+      "nodes": [
+        {
+          "tag": "b",
+          "children": [
+            {
+              "text": "x"
+            }
+          ]
+        },
+        {
+          "text": "tail"
+        }
+      ],
+      "xml": "<b>x</b>tail",
+      "stateVector": "AekHCA==",
+      "update": "AQXpBwAHAQdjb250ZW50AwFiBwDpBwAGBADpBwEBeIfpBwAGBADpBwMEdGFpbAA="
+    }
   ]
 }

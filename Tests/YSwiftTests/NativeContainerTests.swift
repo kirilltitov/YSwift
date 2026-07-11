@@ -33,8 +33,32 @@ private struct ContainerFixtures: Decodable {
         let stateVector: String
         let update: String
     }
+    struct XmlSpec: Decodable {
+        let text: String?
+        let tag: String?
+        let attrs: [[YValue]]?
+        let children: [XmlSpec]?
+
+        var node: YXmlNode {
+            if let text { return .text(text) }
+            var attributes: [String: YValue] = [:]
+            for pair in self.attrs ?? [] where pair.count == 2 {
+                if case .string(let key) = pair[0] { attributes[key] = pair[1] }
+            }
+            return .element(tag: self.tag ?? "", attributes: attributes, children: (self.children ?? []).map(\.node))
+        }
+    }
+    struct XmlCase: Decodable {
+        let name: String
+        let clientID: UInt64
+        let nodes: [XmlSpec]
+        let xml: String
+        let stateVector: String
+        let update: String
+    }
     let array: [ArrayCase]
     let map: [MapCase]
+    let xml: [XmlCase]
 }
 
 @Suite("native containers (Y.Array / Y.Map)")
@@ -98,6 +122,22 @@ struct NativeContainerTests {
             let got = doc.transact { txn in map.toDictionary(txn) }
             let expected = try JSONDecoder().decode([String: YValue].self, from: Data(fixture.json.utf8))
             #expect(got == expected, "\(fixture.name): toDictionary")
+        }
+    }
+
+    @Test("xml ops reproduce byte-exact update + state vector and serialise")
+    func xmlConformance() throws {
+        for fixture in try self.fixtures().xml {
+            let doc = YDoc(clientID: fixture.clientID)
+            let fragment = doc.xmlFragment("content")
+            doc.transact { txn in fragment.insert(txn, at: 0, fixture.nodes.map(\.node)) }
+            doc.transact { txn in
+                #expect(doc.encodeStateAsUpdate(txn).base64EncodedString() == fixture.update, "\(fixture.name): update")
+                #expect(
+                    doc.encodeStateVector(txn).data.base64EncodedString() == fixture.stateVector,
+                    "\(fixture.name): state vector")
+                #expect(fragment.toString(txn) == fixture.xml, "\(fixture.name): toString")
+            }
         }
     }
 }

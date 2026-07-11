@@ -187,6 +187,46 @@ function mapFixture(name, description, clientID, ops) {
   }
 }
 
+// Builds a detached Y.Xml node from a spec: { text } | { tag, attrs?: [[k,v]], children?: [node] }.
+// Children are appended, then attributes set — yjs integrates prelim children
+// before prelim attributes, so this fixes the clock order the Swift builder mirrors.
+function buildXmlNode(spec) {
+  if (spec.text !== undefined) return new Y.XmlText(spec.text)
+  const el = new Y.XmlElement(spec.tag)
+  for (const child of spec.children ?? []) el.insert(el.length, [buildXmlNode(child)])
+  for (const [k, v] of spec.attrs ?? []) el.setAttribute(k, v)
+  return el
+}
+
+function xmlFixture(name, description, clientID, nodes) {
+  const doc = new Y.Doc()
+  doc.clientID = clientID
+  const f = doc.getXmlFragment(KEY)
+  doc.transact(() => {
+    f.insert(0, nodes.map(buildXmlNode))
+  })
+  return {
+    name, description, clientID, nodes,
+    xml: f.toString(),
+    stateVector: b64(Y.encodeStateVector(doc)),
+    update: b64(Y.encodeStateAsUpdate(doc)),
+  }
+}
+
+const xml = [
+  xmlFixture('xml_simple', 'one element with an attribute and a text child', 1001,
+    [{ tag: 'p', attrs: [['class', 'intro']], children: [{ text: 'Hello' }] }]),
+  xmlFixture('xml_text_child', 'element with only text', 1001,
+    [{ tag: 'span', children: [{ text: 'hi' }] }]),
+  xmlFixture('xml_nested', 'div with two paragraph children', 1001,
+    [{ tag: 'div', children: [
+      { tag: 'p', children: [{ text: 'a' }] },
+      { tag: 'p', children: [{ text: 'b' }] },
+    ] }]),
+  xmlFixture('xml_siblings', 'fragment with an element then a bare text node', 1001,
+    [{ tag: 'b', children: [{ text: 'x' }] }, { text: 'tail' }]),
+]
+
 const array = [
   arrayFixture('array_numbers', 'insert three numbers', 1001,
     [{ op: 'insert', index: 0, values: [1, 2, 3] }]),
@@ -284,7 +324,7 @@ const semantic = [
 
 const out = {
   meta: { yjsVersion: YJS_VERSION, format: 'v1', key: KEY, generatedBy: 'fixtures/generate.mjs' },
-  encode, merge, converge, diff, incremental, sticky, semantic, array, map,
+  encode, merge, converge, diff, incremental, sticky, semantic, array, map, xml,
 }
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -294,5 +334,5 @@ writeFileSync(join(dest, 'golden_v13_6_31.json'), JSON.stringify(out, null, 2) +
 
 const count =
   encode.length + merge.length + converge.length + diff.length + incremental.length + sticky.length
-  + semantic.length + array.length + map.length
+  + semantic.length + array.length + map.length + xml.length
 console.log(`wrote ${count} fixtures (yjs ${YJS_VERSION}) -> Tests/YSwiftTests/Fixtures/golden_v13_6_31.json`)

@@ -75,6 +75,9 @@ protocol YEngine: AnyObject, Sendable {
     func mapKeys(in txn: YTransaction, _ name: String) -> [String]
     func mapToDictionary(in txn: YTransaction, _ name: String) -> [String: YValue]
 
+    func xmlInsert(in txn: YTransaction, _ name: String, at index: Int, _ nodes: [YXmlNode])
+    func xmlString(in txn: YTransaction, _ name: String) -> String
+
     func destroy()
 }
 
@@ -97,4 +100,8 @@ extension YEngine {
     func mapGet(in txn: YTransaction, _ name: String, _ key: String) -> YValue? { self.containersUnsupported() }
     func mapKeys(in txn: YTransaction, _ name: String) -> [String] { self.containersUnsupported() }
     func mapToDictionary(in txn: YTransaction, _ name: String) -> [String: YValue] { self.containersUnsupported() }
+    func xmlInsert(in txn: YTransaction, _ name: String, at index: Int, _ nodes: [YXmlNode]) {
+        self.containersUnsupported()
+    }
+    func xmlString(in txn: YTransaction, _ name: String) -> String { self.containersUnsupported() }
 }

@@ -179,6 +179,25 @@ final class NativeEngine: YEngine, @unchecked Sendable {
         self.doc.map(name).toDictionary().mapValues(ValueBridge.yValue)
     }
 
+    func xmlInsert(in txn: YTransaction, _ name: String, at index: Int, _ nodes: [YXmlNode]) {
+        let type = self.doc.get(name)
+        self.doc.transact { NativeXml(doc: self.doc).insert(into: type, at: index, nodes.map(Self.xmlNode)) }
+    }
+    func xmlString(in txn: YTransaction, _ name: String) -> String {
+        NativeXml(doc: self.doc).string(of: self.doc.get(name))
+    }
+
+    private static func xmlNode(_ node: YXmlNode) -> XmlNode {
+        switch node {
+        case .text(let string): .text(string)
+        case .element(let tag, let attributes, let children):
+            .element(
+                tag: tag,
+                attributes: attributes.map { (key: $0.key, value: ValueBridge.lib0($0.value)) },
+                children: children.map(Self.xmlNode))
+        }
+    }
+
     func destroy() {}
 
     // MARK: Helpers

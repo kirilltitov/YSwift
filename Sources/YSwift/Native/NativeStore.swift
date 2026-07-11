@@ -36,6 +36,10 @@ final class NativeStore {
     /// during the current transaction (used to build the emitted update's delete set).
     var deleteLog: [(client: UInt64, clock: UInt64, length: UInt64)]?
 
+    /// When non-nil, collects the names of root types changed during the current
+    /// transaction (integrated/deleted items), for firing text observers on commit.
+    var changedTypeNames: Set<String>?
+
     /// Marks `item` deleted, keeps parent length in sync, and records the deletion
     /// for the active transaction (`Item.delete`).
     func deleteItem(_ item: Item) {
@@ -45,6 +49,7 @@ final class NativeStore {
         }
         item.markDeleted()
         self.deleteLog?.append((item.id.client, item.id.clock, item.length))
+        if let name = item.parent?.name { self.changedTypeNames?.insert(name) }
     }
 
     /// Next expected clock for `client` (0 if unseen).
@@ -67,6 +72,7 @@ final class NativeStore {
     func addStruct(_ struct: Struct) {
         clients[`struct`.id.client, default: []].append(`struct`)
         self.integratedCount += 1
+        if let name = (`struct` as? Item)?.parent?.name { self.changedTypeNames?.insert(name) }
     }
 
     /// Binary search for the struct covering `clock` (ported from `findIndexSS`,

@@ -112,6 +112,24 @@ struct NativeEngineGoldenTests {
         }
     }
 
+    @Test("text.observe reports the per-transaction change delta")
+    func textObserve() throws {
+        let doc = self.doc(clientID: 1)
+        let text = doc.text("content")
+        doc.transact { txn in text.insert(txn, at: 0, "hello") }
+
+        let captured = Mutex<[[Delta]]>([])
+        let sub = text.observe { event in captured.withLock { $0.append(event.delta) } }
+        doc.transact(origin: "user") { txn in text.insert(txn, at: 5, " world") }
+        doc.transact { txn in text.delete(txn, at: 0, length: 1) }
+        sub.cancel()
+
+        let deltas = captured.withLock { $0 }
+        #expect(deltas.count == 2)
+        #expect(deltas.first == [.retain(5, attributes: nil), .insert(.string(" world"), attributes: nil)])
+        #expect(deltas.last == [.delete(1)])
+    }
+
     @Test("StickyIndex encodes byte-compatibly and resolves through edits")
     func stickyConformance() throws {
         let suite = try Golden.loadSuite()

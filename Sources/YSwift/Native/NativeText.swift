@@ -1,13 +1,19 @@
-// Local YText operations (insert / delete / format) and `toDelta`, ported from
-// yjs v13.6.31 `types/YText.js`. Each public op runs inside `NativeDoc.transact`,
-// which merges and garbage-collects structs afterwards so the store matches yjs
-// byte-for-byte.
+// Local YText operations (insert / delete / format), `toDelta`, and the
+// per-transaction change delta, ported from yjs v13.6.31 `types/YText.js`. Each
+// public op runs inside `NativeDoc.transact`, which merges and garbage-collects
+// structs afterwards so the store matches yjs byte-for-byte.
 //
 // Attribute values are carried as their JSON-serialised form (a `String`), which
 // keeps `ContentFormat` byte-exact on encode and makes `toDelta` a direct JSON
 // assembly. NOTE: attributes are compared/iterated as an unordered map, so a
 // single op applying two or more attributes at once is not guaranteed to match
 // yjs's object-key order yet (no fixture exercises that; tracked for later).
+
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
+import Foundation
+#endif
 
 /// JSON-encodes a `Lib0Any` the way `JSON.stringify` would, for attribute values.
 enum JSONValue {
@@ -408,5 +414,141 @@ final class NativeText {
         }
         packRun()
         return "[" + ops.joined(separator: ",") + "]"
+    }
+
+    // MARK: Change delta (observers)
+
+    private enum DeltaAction { case insert, retain, delete }
+
+    /// The change this text underwent in one transaction, as a Quill delta
+    /// (`YTextEvent.delta`): items added this transaction become inserts, items
+    /// deleted this transaction become deletes, everything else is a retain.
+    /// `beforeState` is the store state before the transaction; `isDeleted` reports
+    /// whether an id was deleted during it. Trailing attribute-less retains are
+    /// trimmed. (Retain-with-attribute-change deltas from re-formatting existing
+    /// text are not yet derived — inserts still carry their running attributes.)
+    func changeDelta(beforeState: [UInt64: UInt64], isDeleted: (YID) -> Bool) -> [Delta] {
+        var delta: [Delta] = []
+        var attributes: [String: String] = [:]  // running attributes (valueJSON) for inserts
+        var action: DeltaAction?
+        var insertUnits: [UInt16] = []
+        var insertValue: YValue?
+        var retain = 0
+        var deleteLen = 0
+
+        func adds(_ item: Item) -> Bool { item.id.clock >= (beforeState[item.id.client] ?? 0) }
+
+        func insertAttributes() -> Attributes? {
+            guard !attributes.isEmpty else { return nil }
+            var out: Attributes = [:]
+            for (key, value) in attributes where value != "null" { out[key] = Self.parseAttribute(value) }
+            return out.isEmpty ? nil : out
+        }
+        func addOp() {
+            guard let currentAction = action else { return }
+            switch currentAction {
+            case .delete: if deleteLen > 0 { delta.append(.delete(deleteLen)) }
+            case .insert:
+                if let value = insertValue {
+                    delta.append(.insert(value, attributes: insertAttributes()))
+                } else if !insertUnits.isEmpty {
+                    delta.append(
+                        .insert(.string(String(decoding: insertUnits, as: UTF16.self)), attributes: insertAttributes()))
+                }
+            case .retain: if retain > 0 { delta.append(.retain(retain, attributes: nil)) }
+            }
+            deleteLen = 0
+            insertUnits = []
+            insertValue = nil
+            retain = 0
+            action = nil
+        }
+
+        var node = self.type.start
+        while let item = node {
+            switch item.content {
+            case .format(let key, let value):
+                if !item.deleted {
+                    if value == "null" { attributes.removeValue(forKey: key) } else { attributes[key] = value }
+                }
+            case .string(let units):
+                if adds(item) {
+                    // Created this transaction; emit as insert unless also deleted here.
+                    if !isDeleted(item.id) {
+                        if action != .insert {
+                            addOp()
+                            action = .insert
+                        }
+                        insertUnits.append(contentsOf: units)
+                    }
+                } else if isDeleted(item.id) {
+                    if action != .delete {
+                        addOp()
+                        action = .delete
+                    }
+                    deleteLen += Int(item.length)
+                } else if !item.deleted {
+                    if action != .retain {
+                        addOp()
+                        action = .retain
+                    }
+                    retain += Int(item.length)
+                }
+            default:
+                // embed / type / any / json / binary: one countable unit.
+                if adds(item) {
+                    if !isDeleted(item.id) {
+                        addOp()
+                        action = .insert
+                        insertValue = Self.insertValue(for: item.content)
+                        addOp()
+                    }
+                } else if isDeleted(item.id) {
+                    if action != .delete {
+                        addOp()
+                        action = .delete
+                    }
+                    deleteLen += Int(item.length)
+                } else if !item.deleted {
+                    if action != .retain {
+                        addOp()
+                        action = .retain
+                    }
+                    retain += Int(item.length)
+                }
+            }
+            node = item.right as? Item
+        }
+        addOp()
+        while case .retain(_, let attrs)? = delta.last, attrs == nil { delta.removeLast() }
+        return delta
+    }
+
+    private static func insertValue(for content: Content) -> YValue {
+        switch content {
+        case .embed(let json): parseAttribute(json)
+        case .any(let items): items.first.map(Self.yvalue) ?? .null
+        default: .null
+        }
+    }
+
+    /// Parses a JSON scalar/value string into a `YValue` (wrapped in an array to
+    /// avoid top-level-fragment decoding limits).
+    private static func parseAttribute(_ json: String) -> YValue {
+        (try? JSONDecoder().decode([YValue].self, from: Data("[\(json)]".utf8)))?.first ?? .null
+    }
+
+    private static func yvalue(_ any: Lib0Any) -> YValue {
+        switch any {
+        case .null, .undefined: .null
+        case .bool(let flag): .bool(flag)
+        case .number(let number): number == number.rounded(.towardZero) ? .int(Int64(number)) : .double(number)
+        case .bigInt(let number): .int(number)
+        case .string(let text): .string(text)
+        case .bytes(let bytes): .data(Data(bytes))
+        case .array(let items): .array(items.map(Self.yvalue))
+        case .object(let pairs):
+            .object(Dictionary(pairs.map { ($0.key, Self.yvalue($0.value)) }) { first, _ in first })
+        }
     }
 }

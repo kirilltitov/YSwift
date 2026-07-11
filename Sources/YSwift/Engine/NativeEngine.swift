@@ -106,7 +106,10 @@ final class NativeEngine: YEngine, @unchecked Sendable {
     }
 
     func observeText(_ handle: TextHandle, _ callback: @escaping @Sendable (YTextEvent) -> Void) -> YSubscription {
-        YSubscription {}  // native text observers: not yet implemented
+        _ = self.doc.get(handle.name)
+        let id = self.doc.observeText(handle.name, callback)
+        let name = handle.name
+        return YSubscription { [weak self] in self?.doc.removeTextObserver(name, id) }
     }
 
     // MARK: Not yet implemented natively

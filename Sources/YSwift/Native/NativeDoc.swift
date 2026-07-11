@@ -71,35 +71,82 @@ final class NativeDoc {
         self.handlers.withLock { $0.list.removeAll { $0.id == id } }
     }
 
+    /// Text-change observers, keyed by root type name, behind their own lock.
+    private struct ObserverBook {
+        var next = 0
+        var byName: [String: [(id: Int, callback: @Sendable (YTextEvent) -> Void)]] = [:]
+    }
+    private let observers = Mutex(ObserverBook())
+
+    @discardableResult
+    func observeText(_ name: String, _ callback: @escaping @Sendable (YTextEvent) -> Void) -> Int {
+        self.observers.withLock { book in
+            let id = book.next
+            book.next += 1
+            book.byName[name, default: []].append((id, callback))
+            return id
+        }
+    }
+
+    func removeTextObserver(_ name: String, _ id: Int) {
+        self.observers.withLock { $0.byName[name]?.removeAll { $0.id == id } }
+    }
+
     /// Opens (or joins) a transaction. Only the outermost `begin`/`commit` pair
     /// snapshots state, cleans up, and emits — nested ops just join it.
     func beginTransaction(origin: Origin? = nil) {
         if self.txnDepth == 0 {
             self.txnBeforeState = self.store.snapshotState()
             self.store.deleteLog = []
+            self.store.changedTypeNames = []
             self.txnOrigin = origin
         }
         self.txnDepth += 1
     }
 
-    /// Closes a transaction; on the outermost close, cleans up (GC deleted content +
-    /// merge structs) and emits the transaction's incremental update.
+    /// Closes a transaction; on the outermost close, fires text observers (on the
+    /// pre-cleanup store, as yjs does), cleans up (GC + merge), and emits the
+    /// transaction's incremental update.
     func commitTransaction() {
         guard self.txnDepth > 0 else { return }
         self.txnDepth -= 1
         guard self.txnDepth == 0 else { return }
-        self.store.cleanup(gc: self.gc)
         let deletes = self.store.deleteLog ?? []
-        self.store.deleteLog = nil
+        let changed = self.store.changedTypeNames ?? []
         let origin = self.txnOrigin
+
+        // 1. Text observers run BEFORE cleanup — merging/GC would hide which items
+        //    were added this transaction (yjs fires observers, then merges).
+        self.fireTextObservers(changed: changed, deletes: deletes)
+
+        // 2. Cleanup so the emitted update encodes the merged/GC'd store byte-exactly.
+        self.store.cleanup(gc: self.gc)
+        self.store.deleteLog = nil
+        self.store.changedTypeNames = nil
         self.txnOrigin = nil
 
-        // Snapshot handlers under the lock, then invoke them WITHOUT holding it (a
-        // handler may register/cancel or open a transaction — the lock isn't reentrant).
+        // 3. Emit the incremental update to onUpdate handlers.
         let snapshot = self.handlers.withLock { $0.list }
         guard !snapshot.isEmpty else { return }
         if let update = self.encodeTransactionUpdate(beforeState: self.txnBeforeState, deletes: deletes) {
             for entry in snapshot { entry.handler(update, origin) }
+        }
+    }
+
+    private func fireTextObservers(
+        changed: Set<String>, deletes: [(client: UInt64, clock: UInt64, length: UInt64)]
+    ) {
+        guard !changed.isEmpty else { return }
+        func isDeleted(_ id: YID) -> Bool {
+            deletes.contains { $0.client == id.client && id.clock >= $0.clock && id.clock < $0.clock + $0.length }
+        }
+        for name in changed {
+            let callbacks = self.observers.withLock { $0.byName[name] ?? [] }
+            guard !callbacks.isEmpty, let type = share[name] else { continue }
+            let delta = NativeText(doc: self, type: type)
+                .changeDelta(beforeState: self.txnBeforeState, isDeleted: isDeleted)
+            let event = YTextEvent(delta: delta)
+            for entry in callbacks { entry.callback(event) }
         }
     }
 

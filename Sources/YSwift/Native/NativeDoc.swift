@@ -115,22 +115,56 @@ final class NativeDoc {
         let changed = self.store.changedTypeNames ?? []
         let origin = self.txnOrigin
 
+        let beforeState = self.txnBeforeState
+
         // 1. Text observers run BEFORE cleanup — merging/GC would hide which items
         //    were added this transaction (yjs fires observers, then merges).
         self.fireTextObservers(changed: changed, deletes: deletes)
 
-        // 2. Cleanup so the emitted update encodes the merged/GC'd store byte-exactly.
+        // 2. afterTransaction handlers (e.g. UndoManager capture) — also BEFORE
+        //    cleanup, so `keepItem` can protect deleted content from the GC below.
+        if !self.afterTransactionHandlers.isEmpty {
+            let info = TransactionInfo(
+                beforeState: beforeState, afterState: self.store.snapshotState(),
+                deletes: deletes, changedNames: changed, origin: origin)
+            for entry in self.afterTransactionHandlers { entry.handler(info) }
+        }
+
+        // 3. Cleanup so the emitted update encodes the merged/GC'd store byte-exactly.
         self.store.cleanup(gc: self.gc)
         self.store.deleteLog = nil
         self.store.changedTypeNames = nil
         self.txnOrigin = nil
 
-        // 3. Emit the incremental update to onUpdate handlers.
+        // 4. Emit the incremental update to onUpdate handlers.
         let snapshot = self.handlers.withLock { $0.list }
         guard !snapshot.isEmpty else { return }
-        if let update = self.encodeTransactionUpdate(beforeState: self.txnBeforeState, deletes: deletes) {
+        if let update = self.encodeTransactionUpdate(beforeState: beforeState, deletes: deletes) {
             for entry in snapshot { entry.handler(update, origin) }
         }
+    }
+
+    /// Post-commit transaction summary, for stateful helpers like `UndoManager`.
+    struct TransactionInfo {
+        let beforeState: [UInt64: UInt64]
+        let afterState: [UInt64: UInt64]
+        let deletes: [(client: UInt64, clock: UInt64, length: UInt64)]
+        let changedNames: Set<String>
+        let origin: Origin?
+    }
+    private var afterTransactionHandlers: [(id: Int, handler: (TransactionInfo) -> Void)] = []
+    private var nextAfterTransactionID = 0
+
+    @discardableResult
+    func onAfterTransaction(_ handler: @escaping (TransactionInfo) -> Void) -> Int {
+        let id = self.nextAfterTransactionID
+        self.nextAfterTransactionID += 1
+        self.afterTransactionHandlers.append((id, handler))
+        return id
+    }
+
+    func removeAfterTransactionHandler(_ id: Int) {
+        self.afterTransactionHandlers.removeAll { $0.id == id }
     }
 
     private func fireTextObservers(

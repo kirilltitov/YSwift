@@ -226,6 +226,8 @@ final class Item: Struct {
     var content: Content
     /// lib0 `binary` bit flags (keep / countable / deleted).
     var info: UInt8
+    /// Set once this item has been re-created by an undo/redo (`Item.redone`).
+    var redone: YID?
 
     init(
         id: YID,
@@ -249,6 +251,11 @@ final class Item: Struct {
     var deleted: Bool { (self.info & Bit.deleted) != 0 }
     var countable: Bool { (self.info & Bit.countable) != 0 }
     func markDeleted() { self.info |= Bit.deleted }
+
+    /// `keep` protects a deleted item from garbage collection so an UndoManager can
+    /// still re-create its content (`Item.keep` / `keepItem`).
+    var keep: Bool { (self.info & Bit.keep) != 0 }
+    func setKeep(_ value: Bool) { if self.keep != value { self.info ^= Bit.keep } }
 
     /// Last clock address covered by this item.
     var lastId: YID {

@@ -115,12 +115,17 @@ final class NativeEngine: YEngine, @unchecked Sendable {
     // MARK: Not yet implemented natively
 
     func makeUndoManager(_ handle: TextHandle, trackedOrigins: Set<Origin>, captureTimeoutMillis: UInt64) -> AnyObject?
-    { nil }
-    func undoManagerUndo(_ mgr: AnyObject) -> Bool { false }
-    func undoManagerRedo(_ mgr: AnyObject) -> Bool { false }
-    func undoManagerCanUndo(_ mgr: AnyObject) -> Bool { false }
-    func undoManagerCanRedo(_ mgr: AnyObject) -> Bool { false }
-    func undoManagerStopCapturing(_ mgr: AnyObject) {}
+    {
+        _ = self.doc.get(handle.name)
+        return NativeUndoManager(
+            doc: self.doc, typeName: handle.name, trackedOrigins: trackedOrigins,
+            captureTimeoutMillis: captureTimeoutMillis)
+    }
+    func undoManagerUndo(_ mgr: AnyObject) -> Bool { (mgr as? NativeUndoManager)?.undo() ?? false }
+    func undoManagerRedo(_ mgr: AnyObject) -> Bool { (mgr as? NativeUndoManager)?.redo() ?? false }
+    func undoManagerCanUndo(_ mgr: AnyObject) -> Bool { (mgr as? NativeUndoManager)?.canUndo ?? false }
+    func undoManagerCanRedo(_ mgr: AnyObject) -> Bool { (mgr as? NativeUndoManager)?.canRedo ?? false }
+    func undoManagerStopCapturing(_ mgr: AnyObject) { (mgr as? NativeUndoManager)?.stopCapturing() }
 
     func makeAwareness() -> AnyObject? { NativeAwareness(clientID: self.doc.clientID) }
 

@@ -130,6 +130,36 @@ struct NativeEngineGoldenTests {
         #expect(deltas.last == [.delete(1)])
     }
 
+    @Test("UndoManager undoes and redoes tracked-origin edits")
+    func undoRedo() {
+        let doc = self.doc(clientID: 1)
+        let text = doc.text("content")
+        let undo = YSwift.UndoManager(text, trackedOrigins: ["user"])
+
+        doc.transact(origin: "user") { txn in text.insert(txn, at: 0, "hello") }
+        #expect(doc.transact { txn in text.string(txn) } == "hello")
+        #expect(undo.canUndo)
+
+        undo.undo()
+        #expect(doc.transact { txn in text.string(txn) } == "")
+        #expect(undo.canRedo)
+
+        undo.redo()
+        #expect(doc.transact { txn in text.string(txn) } == "hello")
+    }
+
+    @Test("UndoManager ignores edits from untracked origins")
+    func undoUntracked() {
+        let doc = self.doc(clientID: 1)
+        let text = doc.text("content")
+        let undo = YSwift.UndoManager(text, trackedOrigins: ["user"])
+
+        doc.transact(origin: "other") { txn in text.insert(txn, at: 0, "x") }
+        #expect(!undo.canUndo)
+        undo.undo()
+        #expect(doc.transact { txn in text.string(txn) } == "x")
+    }
+
     @Test("Awareness syncs local state between peers")
     func awarenessSync() {
         let docA = self.doc(clientID: 1)

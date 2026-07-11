@@ -152,7 +152,7 @@ final class NativeStore {
     private func garbageCollect(_ client: UInt64) {
         guard let structs = clients[client] else { return }
         for s in structs {
-            guard let item = s as? Item, item.deleted else { continue }
+            guard let item = s as? Item, item.deleted, !item.keep else { continue }
             if case .deleted = item.content { continue }
             item.content = .deleted(item.length)
         }

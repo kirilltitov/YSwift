@@ -150,6 +150,35 @@ final class NativeEngine: YEngine, @unchecked Sendable {
         return YSubscription { awareness.removeOnChange(id) }
     }
 
+    // MARK: Containers
+
+    func arrayInsert(in txn: YTransaction, _ name: String, at index: Int, _ values: [YValue]) {
+        self.doc.array(name).insert(index, values.map(ValueBridge.lib0))
+    }
+    func arrayDelete(in txn: YTransaction, _ name: String, at index: Int, count: Int) {
+        self.doc.array(name).delete(index, count)
+    }
+    func arrayLength(in txn: YTransaction, _ name: String) -> Int { self.doc.array(name).length }
+    func arrayValues(in txn: YTransaction, _ name: String) -> [YValue] {
+        self.doc.array(name).toArray().map(ValueBridge.yValue)
+    }
+
+    func mapSet(in txn: YTransaction, _ name: String, _ key: String, _ value: YValue) {
+        self.doc.map(name).set(key, ValueBridge.lib0(value))
+    }
+    func mapDelete(in txn: YTransaction, _ name: String, _ key: String) {
+        self.doc.map(name).delete(key)
+    }
+    func mapGet(in txn: YTransaction, _ name: String, _ key: String) -> YValue? {
+        self.doc.map(name).get(key).map(ValueBridge.yValue)
+    }
+    func mapKeys(in txn: YTransaction, _ name: String) -> [String] {
+        self.doc.map(name).keys()
+    }
+    func mapToDictionary(in txn: YTransaction, _ name: String) -> [String: YValue] {
+        self.doc.map(name).toDictionary().mapValues(ValueBridge.yValue)
+    }
+
     func destroy() {}
 
     // MARK: Helpers

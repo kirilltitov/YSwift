@@ -369,5 +369,221 @@
       "text": "text",
       "deltaJSON": "[{\"insert\":\"text\",\"attributes\":{\"bold\":true,\"italic\":true}}]"
     }
+  ],
+  "array": [
+    {
+      "name": "array_numbers",
+      "description": "insert three numbers",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "insert",
+          "index": 0,
+          "values": [
+            1,
+            2,
+            3
+          ]
+        }
+      ],
+      "json": "[1,2,3]",
+      "stateVector": "AekHAw==",
+      "update": "AQHpBwAIAQdjb250ZW50A30BfQJ9AwA="
+    },
+    {
+      "name": "array_mixed",
+      "description": "mixed scalar values",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "insert",
+          "index": 0,
+          "values": [
+            "a",
+            true,
+            null,
+            42
+          ]
+        }
+      ],
+      "json": "[\"a\",true,null,42]",
+      "stateVector": "AekHBA==",
+      "update": "AQHpBwAIAQdjb250ZW50BHcBYXh+fSoA"
+    },
+    {
+      "name": "array_nested",
+      "description": "nested json array + object values",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "insert",
+          "index": 0,
+          "values": [
+            [
+              1,
+              2
+            ],
+            {
+              "k": "v"
+            }
+          ]
+        }
+      ],
+      "json": "[[1,2],{\"k\":\"v\"}]",
+      "stateVector": "AekHAg==",
+      "update": "AQHpBwAIAQdjb250ZW50AnUCfQF9AnYBAWt3AXYA"
+    },
+    {
+      "name": "array_delete",
+      "description": "insert five, delete a middle run",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "insert",
+          "index": 0,
+          "values": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "op": "delete",
+          "index": 1,
+          "length": 2
+        }
+      ],
+      "json": "[1,4,5]",
+      "stateVector": "AekHBQ==",
+      "update": "AQPpBwAIAQdjb250ZW50AX0BgekHAAKI6QcCAn0EfQUB6QcBAQI="
+    },
+    {
+      "name": "array_multi_insert",
+      "description": "two inserts, second splits the first run",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "insert",
+          "index": 0,
+          "values": [
+            1,
+            2
+          ]
+        },
+        {
+          "op": "insert",
+          "index": 1,
+          "values": [
+            9
+          ]
+        }
+      ],
+      "json": "[1,9,2]",
+      "stateVector": "AekHAw==",
+      "update": "AQPpBwAIAQdjb250ZW50AX0BiOkHAAF9AsjpBwDpBwEBfQkA"
+    }
+  ],
+  "map": [
+    {
+      "name": "map_basic",
+      "description": "set a number and a string",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "set",
+          "key": "a",
+          "value": 1
+        },
+        {
+          "op": "set",
+          "key": "b",
+          "value": "hi"
+        }
+      ],
+      "json": "{\"a\":1,\"b\":\"hi\"}",
+      "stateVector": "AekHAg==",
+      "update": "AQLpBwAoAQdjb250ZW50AWEBfQEoAQdjb250ZW50AWIBdwJoaQA="
+    },
+    {
+      "name": "map_types",
+      "description": "null / array / object / bool values",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "set",
+          "key": "n",
+          "value": null
+        },
+        {
+          "op": "set",
+          "key": "arr",
+          "value": [
+            1,
+            2
+          ]
+        },
+        {
+          "op": "set",
+          "key": "obj",
+          "value": {
+            "x": 1
+          }
+        },
+        {
+          "op": "set",
+          "key": "flag",
+          "value": true
+        }
+      ],
+      "json": "{\"n\":null,\"arr\":[1,2],\"obj\":{\"x\":1},\"flag\":true}",
+      "stateVector": "AekHBA==",
+      "update": "AQTpBwAoAQdjb250ZW50AW4BfigBB2NvbnRlbnQDYXJyAXUCfQF9AigBB2NvbnRlbnQDb2JqAXYBAXh9ASgBB2NvbnRlbnQEZmxhZwF4AA=="
+    },
+    {
+      "name": "map_overwrite",
+      "description": "overwriting a key keeps the last value",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "set",
+          "key": "k",
+          "value": 1
+        },
+        {
+          "op": "set",
+          "key": "k",
+          "value": 2
+        }
+      ],
+      "json": "{\"k\":2}",
+      "stateVector": "AekHAg==",
+      "update": "AQLpBwAhAQdjb250ZW50AWsBqOkHAAF9AgHpBwEAAQ=="
+    },
+    {
+      "name": "map_delete",
+      "description": "set two keys, delete one",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "set",
+          "key": "a",
+          "value": 1
+        },
+        {
+          "op": "set",
+          "key": "b",
+          "value": 2
+        },
+        {
+          "op": "delete",
+          "key": "a"
+        }
+      ],
+      "json": "{\"b\":2}",
+      "stateVector": "AekHAg==",
+      "update": "AQLpBwAhAQdjb250ZW50AWEBKAEHY29udGVudAFiAX0CAekHAQAB"
+    }
   ]
 }

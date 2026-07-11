@@ -42,6 +42,16 @@ final class NativeDoc {
         NativeText(doc: self, type: self.get(name))
     }
 
+    /// A locally-editable array handle over root type `name`.
+    func array(_ name: String) -> NativeArray {
+        NativeArray(doc: self, type: self.get(name))
+    }
+
+    /// A locally-editable map handle over root type `name`.
+    func map(_ name: String) -> NativeMap {
+        NativeMap(doc: self, type: self.get(name))
+    }
+
     private var txnDepth = 0
     private var txnBeforeState: [UInt64: UInt64] = [:]
     private var txnStartIntegratedCount = 0

@@ -61,5 +61,40 @@ protocol YEngine: AnyObject, Sendable {
     func onUpdate(_ callback: @escaping @Sendable (Data, Origin?) -> Void) -> YSubscription
     func observeText(_ handle: TextHandle, _ callback: @escaping @Sendable (YTextEvent) -> Void) -> YSubscription
 
+    // Container types (Y.Array / Y.Map) — an extension beyond the §4 text subset.
+    // Only the native engine implements these; the trapping defaults below apply to
+    // engines (e.g. YrsEngine) whose FFI doesn't wire containers.
+    func arrayInsert(in txn: YTransaction, _ name: String, at index: Int, _ values: [YValue])
+    func arrayDelete(in txn: YTransaction, _ name: String, at index: Int, count: Int)
+    func arrayLength(in txn: YTransaction, _ name: String) -> Int
+    func arrayValues(in txn: YTransaction, _ name: String) -> [YValue]
+
+    func mapSet(in txn: YTransaction, _ name: String, _ key: String, _ value: YValue)
+    func mapDelete(in txn: YTransaction, _ name: String, _ key: String)
+    func mapGet(in txn: YTransaction, _ name: String, _ key: String) -> YValue?
+    func mapKeys(in txn: YTransaction, _ name: String) -> [String]
+    func mapToDictionary(in txn: YTransaction, _ name: String) -> [String: YValue]
+
     func destroy()
+}
+
+extension YEngine {
+    private func containersUnsupported() -> Never {
+        preconditionFailure("container types (Y.Array / Y.Map) require the native engine")
+    }
+    func arrayInsert(in txn: YTransaction, _ name: String, at index: Int, _ values: [YValue]) {
+        self.containersUnsupported()
+    }
+    func arrayDelete(in txn: YTransaction, _ name: String, at index: Int, count: Int) {
+        self.containersUnsupported()
+    }
+    func arrayLength(in txn: YTransaction, _ name: String) -> Int { self.containersUnsupported() }
+    func arrayValues(in txn: YTransaction, _ name: String) -> [YValue] { self.containersUnsupported() }
+    func mapSet(in txn: YTransaction, _ name: String, _ key: String, _ value: YValue) {
+        self.containersUnsupported()
+    }
+    func mapDelete(in txn: YTransaction, _ name: String, _ key: String) { self.containersUnsupported() }
+    func mapGet(in txn: YTransaction, _ name: String, _ key: String) -> YValue? { self.containersUnsupported() }
+    func mapKeys(in txn: YTransaction, _ name: String) -> [String] { self.containersUnsupported() }
+    func mapToDictionary(in txn: YTransaction, _ name: String) -> [String: YValue] { self.containersUnsupported() }
 }

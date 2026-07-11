@@ -51,6 +51,18 @@ public final class YDoc: Sendable {
         YText(doc: self, handle: self.engine.textHandle(name))
     }
 
+    /// Returns the top-level array type under `name` (analogue of Yjs `getArray`).
+    /// Container types require the native engine.
+    public func array(_ name: String) -> YArray {
+        YArray(doc: self, name: name)
+    }
+
+    /// Returns the top-level map type under `name` (analogue of Yjs `getMap`).
+    /// Container types require the native engine.
+    public func map(_ name: String) -> YMap {
+        YMap(doc: self, name: name)
+    }
+
     /// Runs `body` inside a single transaction, bundling all edits into one
     /// update. `origin` is attached to the transaction and forwarded to
     /// `onUpdate` listeners.

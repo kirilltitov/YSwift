@@ -143,6 +143,75 @@ function semanticFixture(name, description, clientID, ops) {
   }
 }
 
+// --- Containers (Y.Array / Y.Map) — extension beyond the §4 text subset. ---
+
+function arrayFixture(name, description, clientID, ops) {
+  const doc = new Y.Doc()
+  doc.clientID = clientID
+  const a = doc.getArray(KEY)
+  doc.transact(() => {
+    for (const o of ops) {
+      switch (o.op) {
+        case 'insert': a.insert(o.index, o.values); break
+        case 'delete': a.delete(o.index, o.length); break
+        default: throw new Error(`unknown array op: ${o.op}`)
+      }
+    }
+  })
+  return {
+    name, description, clientID, ops,
+    json: JSON.stringify(a.toJSON()),
+    stateVector: b64(Y.encodeStateVector(doc)),
+    update: b64(Y.encodeStateAsUpdate(doc)),
+  }
+}
+
+function mapFixture(name, description, clientID, ops) {
+  const doc = new Y.Doc()
+  doc.clientID = clientID
+  const m = doc.getMap(KEY)
+  doc.transact(() => {
+    for (const o of ops) {
+      switch (o.op) {
+        case 'set': m.set(o.key, o.value); break
+        case 'delete': m.delete(o.key); break
+        default: throw new Error(`unknown map op: ${o.op}`)
+      }
+    }
+  })
+  return {
+    name, description, clientID, ops,
+    json: JSON.stringify(m.toJSON()),
+    stateVector: b64(Y.encodeStateVector(doc)),
+    update: b64(Y.encodeStateAsUpdate(doc)),
+  }
+}
+
+const array = [
+  arrayFixture('array_numbers', 'insert three numbers', 1001,
+    [{ op: 'insert', index: 0, values: [1, 2, 3] }]),
+  arrayFixture('array_mixed', 'mixed scalar values', 1001,
+    [{ op: 'insert', index: 0, values: ['a', true, null, 42] }]),
+  arrayFixture('array_nested', 'nested json array + object values', 1001,
+    [{ op: 'insert', index: 0, values: [[1, 2], { k: 'v' }] }]),
+  arrayFixture('array_delete', 'insert five, delete a middle run', 1001,
+    [{ op: 'insert', index: 0, values: [1, 2, 3, 4, 5] }, { op: 'delete', index: 1, length: 2 }]),
+  arrayFixture('array_multi_insert', 'two inserts, second splits the first run', 1001,
+    [{ op: 'insert', index: 0, values: [1, 2] }, { op: 'insert', index: 1, values: [9] }]),
+]
+
+const map = [
+  mapFixture('map_basic', 'set a number and a string', 1001,
+    [{ op: 'set', key: 'a', value: 1 }, { op: 'set', key: 'b', value: 'hi' }]),
+  mapFixture('map_types', 'null / array / object / bool values', 1001,
+    [{ op: 'set', key: 'n', value: null }, { op: 'set', key: 'arr', value: [1, 2] },
+     { op: 'set', key: 'obj', value: { x: 1 } }, { op: 'set', key: 'flag', value: true }]),
+  mapFixture('map_overwrite', 'overwriting a key keeps the last value', 1001,
+    [{ op: 'set', key: 'k', value: 1 }, { op: 'set', key: 'k', value: 2 }]),
+  mapFixture('map_delete', 'set two keys, delete one', 1001,
+    [{ op: 'set', key: 'a', value: 1 }, { op: 'set', key: 'b', value: 2 }, { op: 'delete', key: 'a' }]),
+]
+
 const encode = [
   encodeFixture('empty', 'new doc, no ops', 1001, []),
   encodeFixture('ascii', 'plain ascii insert', 1001,
@@ -215,7 +284,7 @@ const semantic = [
 
 const out = {
   meta: { yjsVersion: YJS_VERSION, format: 'v1', key: KEY, generatedBy: 'fixtures/generate.mjs' },
-  encode, merge, converge, diff, incremental, sticky, semantic,
+  encode, merge, converge, diff, incremental, sticky, semantic, array, map,
 }
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -223,5 +292,7 @@ const dest = join(here, '..', 'Tests', 'YSwiftTests', 'Fixtures')
 mkdirSync(dest, { recursive: true })
 writeFileSync(join(dest, 'golden_v13_6_31.json'), JSON.stringify(out, null, 2) + '\n')
 
-const count = encode.length + merge.length + converge.length + diff.length + incremental.length + sticky.length + semantic.length
+const count =
+  encode.length + merge.length + converge.length + diff.length + incremental.length + sticky.length
+  + semantic.length + array.length + map.length
 console.log(`wrote ${count} fixtures (yjs ${YJS_VERSION}) -> Tests/YSwiftTests/Fixtures/golden_v13_6_31.json`)

@@ -56,9 +56,16 @@ private struct ContainerFixtures: Decodable {
         let stateVector: String
         let update: String
     }
+    struct ConvergeCase: Decodable {
+        let name: String
+        let kind: String
+        let updates: [String]
+        let json: String
+    }
     let array: [ArrayCase]
     let map: [MapCase]
     let xml: [XmlCase]
+    let containerConverge: [ConvergeCase]
 }
 
 @Suite("native containers (Y.Array / Y.Map / Y.Xml)")
@@ -144,6 +151,28 @@ struct NativeContainerTests {
                     doc.encodeStateVector(txn).data.base64EncodedString() == fixture.stateVector,
                     "\(fixture.name): state vector")
                 #expect(fragment.toString(txn) == fixture.xml, "\(fixture.name): toString")
+            }
+        }
+    }
+
+    @Test("concurrent container edits converge in any order and match yjs")
+    func containerConvergence() throws {
+        for fixture in try self.fixtures().containerConverge {
+            let updates = try fixture.updates.map { Array(try #require(Data(base64Encoded: $0))) }
+            for order in [updates, updates.reversed()] {
+                let doc = self.doc(clientID: 999)
+                doc.transact { txn in for update in order { doc.applyUpdate(txn, Data(update)) } }
+                switch fixture.kind {
+                case "array":
+                    let got = doc.transact { txn in doc.array("content").toArray(txn) }
+                    #expect(got == (try self.values(fromJSON: fixture.json)), "\(fixture.name): array converge")
+                case "map":
+                    let got = doc.transact { txn in doc.map("content").toDictionary(txn) }
+                    let expected = try JSONDecoder().decode([String: YValue].self, from: Data(fixture.json.utf8))
+                    #expect(got == expected, "\(fixture.name): map converge")
+                default:
+                    Issue.record("unknown converge kind \(fixture.kind)")
+                }
             }
         }
     }

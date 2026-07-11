@@ -252,6 +252,78 @@ const map = [
     [{ op: 'set', key: 'a', value: 1 }, { op: 'set', key: 'b', value: 2 }, { op: 'delete', key: 'a' }]),
 ]
 
+// --- Container convergence: concurrent multi-client edits must converge. ---
+
+function applyContainerOps(doc, kind, ops) {
+  if (kind === 'array') {
+    const a = doc.getArray(KEY)
+    for (const o of ops) {
+      if (o.op === 'insert') a.insert(o.index, o.values)
+      else if (o.op === 'delete') a.delete(o.index, o.length)
+    }
+  } else if (kind === 'map') {
+    const m = doc.getMap(KEY)
+    for (const o of ops) {
+      if (o.op === 'set') m.set(o.key, o.value)
+      else if (o.op === 'delete') m.delete(o.key)
+    }
+  }
+}
+
+function containerJSON(doc, kind) {
+  return JSON.stringify((kind === 'array' ? doc.getArray(KEY) : doc.getMap(KEY)).toJSON())
+}
+
+// Concurrent from empty (each client builds independently); tests YATA tie-break /
+// last-writer. `base` (optional) is a shared prefix applied by all clients.
+function convergeContainerFixture(name, description, kind, specs, baseOps = null) {
+  const updates = []
+  let baseUpdate = null
+  let baseSV = null
+  if (baseOps) {
+    const baseDoc = new Y.Doc()
+    baseDoc.clientID = 100
+    applyContainerOps(baseDoc, kind, baseOps)
+    baseUpdate = Y.encodeStateAsUpdate(baseDoc)
+    baseSV = Y.encodeStateVector(baseDoc)
+    updates.push(b64(baseUpdate))
+  }
+  for (const s of specs) {
+    const doc = new Y.Doc()
+    doc.clientID = s.clientID
+    if (baseUpdate) Y.applyUpdate(doc, baseUpdate)
+    applyContainerOps(doc, kind, s.ops)
+    updates.push(b64(baseSV ? Y.encodeStateAsUpdate(doc, baseSV) : Y.encodeStateAsUpdate(doc)))
+  }
+  // Converge by applying every update (forward) to a fresh doc.
+  const merged = new Y.Doc()
+  for (const u of updates) Y.applyUpdate(merged, Uint8Array.from(Buffer.from(u, 'base64')))
+  return { name, description, kind, updates, json: containerJSON(merged, kind) }
+}
+
+const containerConverge = [
+  convergeContainerFixture('array_concurrent_head', 'two clients insert at index 0 concurrently', 'array', [
+    { clientID: 1, ops: [{ op: 'insert', index: 0, values: [1, 2] }] },
+    { clientID: 2, ops: [{ op: 'insert', index: 0, values: [3, 4] }] },
+  ]),
+  convergeContainerFixture('array_base_insert_delete', 'shared base, one inserts while the other deletes', 'array', [
+    { clientID: 1, ops: [{ op: 'insert', index: 1, values: [9] }] },
+    { clientID: 2, ops: [{ op: 'delete', index: 0, length: 1 }] },
+  ], [{ op: 'insert', index: 0, values: [1, 2, 3] }]),
+  convergeContainerFixture('map_concurrent_same_key', 'two clients set the same key (LWW tie-break)', 'map', [
+    { clientID: 1, ops: [{ op: 'set', key: 'k', value: 'A' }] },
+    { clientID: 2, ops: [{ op: 'set', key: 'k', value: 'B' }] },
+  ]),
+  convergeContainerFixture('map_concurrent_diff_keys', 'two clients set different keys', 'map', [
+    { clientID: 1, ops: [{ op: 'set', key: 'a', value: 1 }] },
+    { clientID: 2, ops: [{ op: 'set', key: 'b', value: 2 }] },
+  ]),
+  convergeContainerFixture('map_base_set_vs_delete', 'shared base key; one overwrites while the other deletes', 'map', [
+    { clientID: 1, ops: [{ op: 'set', key: 'k', value: 1 }] },
+    { clientID: 2, ops: [{ op: 'delete', key: 'k' }] },
+  ], [{ op: 'set', key: 'k', value: 0 }]),
+]
+
 const encode = [
   encodeFixture('empty', 'new doc, no ops', 1001, []),
   encodeFixture('ascii', 'plain ascii insert', 1001,
@@ -324,7 +396,7 @@ const semantic = [
 
 const out = {
   meta: { yjsVersion: YJS_VERSION, format: 'v1', key: KEY, generatedBy: 'fixtures/generate.mjs' },
-  encode, merge, converge, diff, incremental, sticky, semantic, array, map, xml,
+  encode, merge, converge, diff, incremental, sticky, semantic, array, map, xml, containerConverge,
 }
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -334,5 +406,5 @@ writeFileSync(join(dest, 'golden_v13_6_31.json'), JSON.stringify(out, null, 2) +
 
 const count =
   encode.length + merge.length + converge.length + diff.length + incremental.length + sticky.length
-  + semantic.length + array.length + map.length + xml.length
+  + semantic.length + array.length + map.length + xml.length + containerConverge.length
 console.log(`wrote ${count} fixtures (yjs ${YJS_VERSION}) -> Tests/YSwiftTests/Fixtures/golden_v13_6_31.json`)

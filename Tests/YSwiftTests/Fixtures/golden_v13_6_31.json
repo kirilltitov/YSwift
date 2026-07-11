@@ -681,5 +681,59 @@
       "stateVector": "AekHCA==",
       "update": "AQXpBwAHAQdjb250ZW50AwFiBwDpBwAGBADpBwEBeIfpBwAGBADpBwMEdGFpbAA="
     }
+  ],
+  "containerConverge": [
+    {
+      "name": "array_concurrent_head",
+      "description": "two clients insert at index 0 concurrently",
+      "kind": "array",
+      "updates": [
+        "AQEBAAgBB2NvbnRlbnQCfQF9AgA=",
+        "AQECAAgBB2NvbnRlbnQCfQN9BAA="
+      ],
+      "json": "[1,2,3,4]"
+    },
+    {
+      "name": "array_base_insert_delete",
+      "description": "shared base, one inserts while the other deletes",
+      "kind": "array",
+      "updates": [
+        "AQFkAAgBB2NvbnRlbnQDfQF9An0DAA==",
+        "AQEBAMhkAGQBAX0JAA==",
+        "AAFkAQAB"
+      ],
+      "json": "[9,2,3]"
+    },
+    {
+      "name": "map_concurrent_same_key",
+      "description": "two clients set the same key (LWW tie-break)",
+      "kind": "map",
+      "updates": [
+        "AQEBACgBB2NvbnRlbnQBawF3AUEA",
+        "AQECACgBB2NvbnRlbnQBawF3AUIA"
+      ],
+      "json": "{\"k\":\"B\"}"
+    },
+    {
+      "name": "map_concurrent_diff_keys",
+      "description": "two clients set different keys",
+      "kind": "map",
+      "updates": [
+        "AQEBACgBB2NvbnRlbnQBYQF9AQA=",
+        "AQECACgBB2NvbnRlbnQBYgF9AgA="
+      ],
+      "json": "{\"a\":1,\"b\":2}"
+    },
+    {
+      "name": "map_base_set_vs_delete",
+      "description": "shared base key; one overwrites while the other deletes",
+      "kind": "map",
+      "updates": [
+        "AQFkACgBB2NvbnRlbnQBawF9AAA=",
+        "AQEBAKhkAAF9AQFkAQAB",
+        "AAFkAQAB"
+      ],
+      "json": "{\"k\":1}"
+    }
   ]
 }

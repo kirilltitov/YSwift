@@ -127,6 +127,24 @@ struct NativeIntegrateTests {
         }
     }
 
+    @Test("out-of-order updates buffer and converge (diff applied before its base)")
+    func pendingBuffer() throws {
+        for fixture in try Self.fixtures().diff {
+            let base = try self.bytes(fixture.base)
+            let diff = try self.bytes(fixture.diff)
+            let name = try self.rootName(base) ?? "content"
+
+            let doc = NativeDoc()
+            // The diff depends on the base (its structs start after the base state);
+            // applied first it must buffer, leaving the doc empty…
+            try doc.applyUpdate(diff)
+            #expect(doc.getText(name) == "", "\(fixture.name): diff must buffer before base")
+            // …then the base arrives and the buffered diff auto-integrates.
+            try doc.applyUpdate(base)
+            #expect(doc.getText(name) == fixture.text, "\(fixture.name): converged after base")
+        }
+    }
+
     @Test("an incremental diff applied atop a base equals the full state")
     func diff() throws {
         for fixture in try Self.fixtures().diff {

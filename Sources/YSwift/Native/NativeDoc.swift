@@ -1,9 +1,9 @@
 // The pure-Swift document engine core: applies a decoded v1 update into the arena
 // store and materialises text / state vectors. Ports yjs `utils/encoding.js`
 // (`readClientsStructRefs` + `integrateStructs` + the struct/delete-set apply
-// order of `readUpdateV2`). Out-of-order updates that causally depend on data not
-// yet present are dropped for now (the pending buffer is M4); complete updates —
-// which every golden vector is — integrate fully.
+// order of `readUpdateV2`). Updates that causally depend on data not yet present
+// are buffered and retried as later updates arrive (see `pendingUpdates`), so
+// out-of-order / partial delivery converges.
 
 import Synchronization
 
@@ -158,12 +158,42 @@ final class NativeDoc {
 
     // MARK: Apply
 
-    /// Decodes and integrates a v1 update (structs then delete set).
+    /// Updates that could not fully integrate yet (they reference structs/clocks
+    /// not present). Retried as later updates arrive, so out-of-order or partial
+    /// delivery converges (the role of yjs `pendingStructs` / `pendingDs`).
+    private var pendingUpdates: [[UInt8]] = []
+
+    /// Decodes and integrates a v1 update; buffers and retries anything that
+    /// depends on data not yet present.
     func applyUpdate(_ bytes: [UInt8]) throws {
+        if try self.integrate(bytes) { self.pendingUpdates.append(bytes) }
+        try self.retryPending()
+    }
+
+    /// Integrates one update in place. Returns true if some structs or deletes were
+    /// left unapplied (missing causal dependencies).
+    private func integrate(_ bytes: [UInt8]) throws -> Bool {
         let parsed = try UpdateCodec.readUpdate(bytes)
         let refs = self.buildClientRefs(parsed.clientBlocks)
-        self.integrateStructs(refs)
-        self.store.applyDeleteSet(parsed.deleteSet)
+        let structsDropped = self.integrateStructs(refs)
+        let deletesDropped = self.store.applyDeleteSet(parsed.deleteSet)
+        return structsDropped || deletesDropped
+    }
+
+    /// Re-applies buffered updates until a full pass integrates nothing new. Each
+    /// re-application is idempotent (already-present structs are skipped by offset;
+    /// re-deletes are no-ops), and a fully-integrated update leaves the buffer.
+    private func retryPending() throws {
+        guard !self.pendingUpdates.isEmpty else { return }
+        while true {
+            let before = self.store.integratedCount
+            var stillPending: [[UInt8]] = []
+            for update in self.pendingUpdates {
+                if try self.integrate(update) { stillPending.append(update) }
+            }
+            self.pendingUpdates = stillPending
+            if self.pendingUpdates.isEmpty || self.store.integratedCount == before { break }
+        }
     }
 
     /// Turns parsed `ClientBlock`s into integrable structs, resolving root-key
@@ -223,13 +253,14 @@ final class NativeDoc {
 
     /// Integrates structs honouring causal dependencies (yjs `integrateStructs`).
     /// The dependency stack lets a struct from a higher client wait for referenced
-    /// data in a lower client. Structs whose dependencies never arrive are dropped
-    /// (pending re-buffering is deferred to M4).
-    private func integrateStructs(_ clientsStructRefs: [UInt64: ClientRefs]) {
+    /// data in a lower client. Returns true if some structs could not integrate
+    /// (missing causal deps) — the caller buffers the update and retries it later.
+    private func integrateStructs(_ clientsStructRefs: [UInt64: ClientRefs]) -> Bool {
         var ids = clientsStructRefs.keys.sorted()
-        guard !ids.isEmpty else { return }
+        guard !ids.isEmpty else { return false }
 
         var stack: [Struct] = []
+        var droppedStructs = false
         var state: [UInt64: UInt64] = [:]
         func cachedState(_ client: UInt64) -> UInt64 {
             if let value = state[client] { return value }
@@ -247,13 +278,14 @@ final class NativeDoc {
             return nil
         }
 
-        // Drops the current stack when a dependency can never be satisfied.
+        // Sets aside the current stack when a dependency isn't satisfiable yet.
         func dropStack() {
+            if !stack.isEmpty { droppedStructs = true }
             for item in stack { ids.removeAll { $0 == item.id.client } }
             stack.removeAll(keepingCapacity: true)
         }
 
-        guard var current = nextTarget() else { return }
+        guard var current = nextTarget() else { return false }
         var head = current.refs[current.i]
         current.i += 1
 
@@ -292,6 +324,7 @@ final class NativeDoc {
                 break
             }
         }
+        return droppedStructs
     }
 
     // MARK: Materialisation

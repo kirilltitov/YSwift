@@ -60,8 +60,13 @@ final class NativeStore {
         self.clients.keys.sorted(by: >).map { (client: $0, clock: self.getState($0)) }
     }
 
+    /// Monotonic count of structs integrated via `addStruct` — used to detect
+    /// progress when retrying buffered (out-of-order) updates.
+    private(set) var integratedCount = 0
+
     func addStruct(_ struct: Struct) {
         clients[`struct`.id.client, default: []].append(`struct`)
+        self.integratedCount += 1
     }
 
     /// Binary search for the struct covering `clock` (ported from `findIndexSS`,
@@ -177,15 +182,25 @@ final class NativeStore {
     }
 
     /// Applies a decoded delete set: splits at range boundaries and marks the
-    /// covered items deleted (`readAndApplyDeleteSet`, without the pending buffer).
-    func applyDeleteSet(_ deleteSet: DeleteSetData) {
+    /// covered items deleted (`readAndApplyDeleteSet`). Returns true if any delete
+    /// referenced clocks not yet present (so the caller can buffer + retry).
+    @discardableResult
+    func applyDeleteSet(_ deleteSet: DeleteSetData) -> Bool {
+        var dropped = false
         for client in deleteSet.clients {
-            guard var structs = clients[client.client], !structs.isEmpty else { continue }
+            guard var structs = clients[client.client], !structs.isEmpty else {
+                if !client.ranges.isEmpty { dropped = true }
+                continue
+            }
             let state = self.getState(client.client)
             for range in client.ranges {
                 let clock = range.clock
                 let clockEnd = clock + range.length
-                guard clock < state else { continue }
+                guard clock < state else {
+                    dropped = true
+                    continue
+                }
+                if state < clockEnd { dropped = true }  // tail [state, clockEnd) not yet present
                 var index = self.findIndex(structs, clock)
                 if let item = structs[index] as? Item, !item.deleted, item.id.clock < clock {
                     structs.insert(splitItem(item, Int(clock - item.id.clock)), at: index + 1)
@@ -205,5 +220,6 @@ final class NativeStore {
             }
             clients[client.client] = structs
         }
+        return dropped
     }
 }

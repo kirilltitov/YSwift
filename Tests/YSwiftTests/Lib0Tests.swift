@@ -1,12 +1,7 @@
+import Foundation
 import Testing
 
 @testable import YSwift
-
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 // Mirrors fixtures/lib0-vectors.mjs output.
 private struct Lib0Vectors: Decodable {

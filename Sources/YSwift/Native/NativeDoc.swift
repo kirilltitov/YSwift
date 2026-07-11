@@ -192,4 +192,87 @@ final class NativeDoc {
         }
         return encoder.bytes
     }
+
+    // MARK: Encode
+
+    /// v1 update bytes for everything the target is missing (`encodeStateAsUpdate`).
+    /// An empty `target` writes the whole document.
+    func encodeStateAsUpdate(target: [UInt64: UInt64] = [:]) -> [UInt8] {
+        var encoder = Lib0Encoder()
+        self.writeClientsStructs(&encoder, target: target)
+        self.writeDeleteSet(&encoder)
+        return encoder.bytes
+    }
+
+    /// Decodes v1 state-vector bytes into a `client -> clock` map.
+    static func decodeStateVector(_ bytes: [UInt8]) throws -> [UInt64: UInt64] {
+        var decoder = Lib0Decoder(bytes)
+        let count = try decoder.readVarUint()
+        var result: [UInt64: UInt64] = [:]
+        for _ in 0..<count {
+            let client = try decoder.readVarUint()
+            result[client] = try decoder.readVarUint()
+        }
+        return result
+    }
+
+    private func writeClientsStructs(_ encoder: inout Lib0Encoder, target: [UInt64: UInt64]) {
+        // Clients with structs the target lacks, written highest-id first (this
+        // ordering is what makes the integration conflict algorithm cheap).
+        var pending: [(client: UInt64, clock: UInt64)] = []
+        for client in self.store.clients.keys {
+            let targetClock = target[client] ?? 0
+            if self.store.getState(client) > targetClock { pending.append((client, targetClock)) }
+        }
+        pending.sort { $0.client > $1.client }
+        encoder.writeVarUint(UInt64(pending.count))
+        for entry in pending { self.writeStructs(&encoder, client: entry.client, clock: entry.clock) }
+    }
+
+    private func writeStructs(_ encoder: inout Lib0Encoder, client: UInt64, clock rawClock: UInt64) {
+        let structs = self.store.clients[client]!
+        let clock = max(rawClock, structs[0].id.clock)
+        let start = self.store.findIndex(structs, clock)
+        encoder.writeVarUint(UInt64(structs.count - start))
+        encoder.writeVarUint(client)
+        encoder.writeVarUint(clock)
+        structs[start].write(into: &encoder, offset: Int(clock - structs[start].id.clock))
+        for index in (start + 1)..<structs.count { structs[index].write(into: &encoder, offset: 0) }
+    }
+
+    /// Writes the delete set derived from the store, coalescing consecutive deleted
+    /// structs (`createDeleteSetFromStructStore` + `writeDeleteSet`).
+    private func writeDeleteSet(_ encoder: inout Lib0Encoder) {
+        var perClient: [(client: UInt64, ranges: [(clock: UInt64, length: UInt64)])] = []
+        for (client, structs) in self.store.clients {
+            var ranges: [(clock: UInt64, length: UInt64)] = []
+            var index = 0
+            while index < structs.count {
+                guard let item = structs[index] as? Item, item.deleted else {
+                    index += 1
+                    continue
+                }
+                let clock = item.id.clock
+                var length = item.length
+                var next = index + 1
+                while next < structs.count, let following = structs[next] as? Item, following.deleted {
+                    length += following.length
+                    next += 1
+                }
+                ranges.append((clock, length))
+                index = next
+            }
+            if !ranges.isEmpty { perClient.append((client, ranges)) }
+        }
+        perClient.sort { $0.client > $1.client }
+        encoder.writeVarUint(UInt64(perClient.count))
+        for entry in perClient {
+            encoder.writeVarUint(entry.client)
+            encoder.writeVarUint(UInt64(entry.ranges.count))
+            for range in entry.ranges {
+                encoder.writeVarUint(range.clock)
+                encoder.writeVarUint(range.length)
+            }
+        }
+    }
 }

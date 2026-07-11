@@ -88,6 +88,53 @@ enum Content {
             preconditionFailure("splice() called on non-splittable content")
         }
     }
+
+    /// Content type tag written into the low 5 bits of an item's info byte
+    /// (`AbstractContent.getRef`).
+    var ref: UInt8 {
+        switch self {
+        case .deleted: 1
+        case .json: 2
+        case .binary: 3
+        case .string: 4
+        case .embed: 5
+        case .format: 6
+        case .type: 7
+        case .any: 8
+        case .doc: 9
+        }
+    }
+
+    /// Writes the content payload, dropping the first `offset` clocks
+    /// (`AbstractContent.write`).
+    func write(into encoder: inout Lib0Encoder, offset: Int) {
+        switch self {
+        case .string(let units):
+            let slice = offset == 0 ? units : Array(units[offset...])
+            encoder.writeVarString(String(decoding: slice, as: UTF16.self))
+        case .deleted(let count):
+            encoder.writeVarUint(count - UInt64(offset))
+        case .any(let items):
+            encoder.writeVarUint(UInt64(items.count - offset))
+            for index in offset..<items.count { encoder.writeAny(items[index]) }
+        case .json(let items):
+            encoder.writeVarUint(UInt64(items.count - offset))
+            for index in offset..<items.count { encoder.writeVarString(items[index]) }
+        case .binary(let bytes):
+            encoder.writeVarUint8Array(bytes)
+        case .embed(let json):
+            encoder.writeVarString(json)
+        case .format(let key, let valueJSON):
+            encoder.writeVarString(key)
+            encoder.writeVarString(valueJSON)
+        case .type(_, let typeRef, let name):
+            encoder.writeVarUint(typeRef)
+            if typeRef == 3 || typeRef == 5, let name { encoder.writeVarString(name) }
+        case .doc(let guid, let options):
+            encoder.writeVarString(guid)
+            encoder.writeAny(options)
+        }
+    }
 }
 
 /// Base class for everything stored in `NativeStore.clients`. `id`/`length` are
@@ -114,6 +161,12 @@ class Struct {
             self.length -= UInt64(offset)
         }
         store.addStruct(self)
+    }
+
+    /// Serialises this struct. Base behaviour writes a GC struct (info byte 0 + len).
+    func write(into encoder: inout Lib0Encoder, offset: Int) {
+        encoder.writeUInt8(0)
+        encoder.writeVarUint(self.length - UInt64(offset))
     }
 }
 
@@ -313,6 +366,46 @@ final class Item: Struct {
         if (parent.item?.deleted ?? false) || (self.parentSub != nil && self.right != nil) {
             self.delete()
         }
+    }
+
+    /// Serialises the item, reconstructing the info byte and parent reference from
+    /// its integrated state (`Item.write`). The origin for a mid-struct offset is
+    /// the clock just before the written slice.
+    override func write(into encoder: inout Lib0Encoder, offset: Int) {
+        let origin: YID? =
+            offset > 0
+            ? YID(client: self.id.client, clock: self.id.clock + UInt64(offset) - 1)
+            : self.origin
+        let info =
+            (self.content.ref & 0x1F)
+            | (origin == nil ? 0 : 0x80)
+            | (self.rightOrigin == nil ? 0 : 0x40)
+            | (self.parentSub == nil ? 0 : 0x20)
+        encoder.writeUInt8(info)
+        if let origin {
+            encoder.writeVarUint(origin.client)
+            encoder.writeVarUint(origin.clock)
+        }
+        if let rightOrigin = self.rightOrigin {
+            encoder.writeVarUint(rightOrigin.client)
+            encoder.writeVarUint(rightOrigin.clock)
+        }
+        if origin == nil, self.rightOrigin == nil {
+            if let parent = self.parent {
+                if let parentItem = parent.item {
+                    encoder.writeVarUint(0)  // parent id
+                    encoder.writeVarUint(parentItem.id.client)
+                    encoder.writeVarUint(parentItem.id.clock)
+                } else {
+                    encoder.writeVarUint(1)  // root key
+                    encoder.writeVarString(parent.name ?? "")
+                }
+            }
+            if let parentSub = self.parentSub {
+                encoder.writeVarString(parentSub)
+            }
+        }
+        self.content.write(into: &encoder, offset: offset)
     }
 
     /// Marks the item deleted and keeps parent length in sync (`Item.delete`).

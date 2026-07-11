@@ -1,12 +1,7 @@
+import Foundation
 import Testing
 
 @testable import YSwift
-
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 // Golden fixtures produced by yjs v13.6.31.
 private struct EncodeFixtures: Decodable {
@@ -32,6 +27,7 @@ private struct EncodeFixtures: Decodable {
     // Incremental update (`diff`) layered atop a `base` state.
     struct Diff: Decodable {
         let name: String
+        let sinceStateVector: String
         let base: String
         let full: String
         let diff: String
@@ -128,6 +124,56 @@ struct NativeIntegrateTests {
             #expect(try self.apply([full]) == fixture.text, "\(fixture.name): full")
             // Applying the diff twice must be idempotent (offset skips the overlap).
             #expect(try self.apply([base, diff, diff]) == fixture.text, "\(fixture.name): diff idempotent")
+        }
+    }
+}
+
+@Suite("native encode (encodeStateAsUpdate)")
+struct NativeEncodeTests {
+    private func fixtures() throws -> EncodeFixtures {
+        let url = try #require(
+            Bundle.module.url(forResource: "golden_v13_6_31", withExtension: "json", subdirectory: "Fixtures")
+        )
+        return try JSONDecoder().decode(EncodeFixtures.self, from: Data(contentsOf: url))
+    }
+
+    private func bytes(_ base64: String) throws -> [UInt8] {
+        Array(try #require(Data(base64Encoded: base64), "bad base64"))
+    }
+
+    @Test("re-encoding an applied golden update reproduces the exact bytes")
+    func encodeRoundTrip() throws {
+        for fixture in try self.fixtures().encode {
+            let update = try self.bytes(fixture.update)
+            let doc = NativeDoc()
+            try doc.applyUpdate(update)
+            #expect(doc.encodeStateAsUpdate() == update, "\(fixture.name): re-encode differs")
+        }
+    }
+
+    @Test("a merged multi-client document re-encodes to the merged bytes")
+    func mergeRoundTrip() throws {
+        for fixture in try self.fixtures().merge {
+            let merged = try self.bytes(fixture.merged)
+            let doc = NativeDoc()
+            try doc.applyUpdate(merged)
+            #expect(doc.encodeStateAsUpdate() == merged, "\(fixture.name): merged re-encode differs")
+
+            // Applying the inputs separately must yield the same encodable state.
+            let fromInputs = NativeDoc()
+            for input in fixture.inputs { try fromInputs.applyUpdate(self.bytes(input)) }
+            #expect(fromInputs.encodeStateAsUpdate() == merged, "\(fixture.name): inputs re-encode differs")
+        }
+    }
+
+    @Test("encoding since a state vector reproduces the golden diff")
+    func diffEncode() throws {
+        for fixture in try self.fixtures().diff {
+            let doc = NativeDoc()
+            try doc.applyUpdate(self.bytes(fixture.full))
+            let target = try NativeDoc.decodeStateVector(self.bytes(fixture.sinceStateVector))
+            #expect(doc.encodeStateAsUpdate(target: target) == (try self.bytes(fixture.diff)), "\(fixture.name): diff")
+            #expect(doc.encodeStateAsUpdate() == (try self.bytes(fixture.full)), "\(fixture.name): full")
         }
     }
 }

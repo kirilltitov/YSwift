@@ -1,12 +1,7 @@
+import Foundation
 import Testing
 
 @testable import YSwift
-
-#if canImport(FoundationEssentials)
-import FoundationEssentials
-#else
-import Foundation
-#endif
 
 // Pulls every update-bearing byte string out of the golden fixture.
 private struct UpdateBearingFixtures: Decodable {

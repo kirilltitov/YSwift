@@ -17,6 +17,16 @@ func milliseconds(_ duration: Duration) -> Double {
     return Double(seconds) * 1000 + Double(attoseconds) / 1_000_000_000_000_000
 }
 
+/// Formats a millisecond value to 3 decimals without Foundation's `String(format:)`
+/// (unavailable in FoundationEssentials on Linux).
+func format3(_ value: Double) -> String {
+    let thousandths = Int((value * 1000).rounded())
+    let whole = thousandths / 1000
+    let fraction = String(thousandths % 1000)
+    let padded = String(repeating: "0", count: 3 - fraction.count) + fraction
+    return "\(whole).\(padded)"
+}
+
 /// Runs `body` `iterations` times after a warm-up and reports the best time.
 func measure(_ label: String, iterations: Int = 5, _ body: () -> Void) {
     body()  // warm-up
@@ -27,8 +37,8 @@ func measure(_ label: String, iterations: Int = 5, _ body: () -> Void) {
         let elapsed = ContinuousClock.now - start
         if elapsed < best { best = elapsed }
     }
-    let padded = label.padding(toLength: 34, withPad: " ", startingAt: 0)
-    print("  \(padded) \(String(format: "%9.3f", milliseconds(best))) ms")
+    let padded = label.count >= 34 ? label : label + String(repeating: " ", count: 34 - label.count)
+    print("  \(padded) \(format3(milliseconds(best))) ms")
 }
 
 /// Builds a text of `count` single-char items by prepending (O(1) position lookup

@@ -7,9 +7,14 @@ import FoundationEssentials
 import Foundation
 #endif
 
-/// Builds the engine backing a new `YDoc`. Phase 1: the Yrs facade.
+/// Builds the engine backing a new `YDoc`. Phase 2 default: the pure-Swift
+/// `NativeEngine`. Set `YSWIFT_ENGINE=yrs` to use the Rust `YrsEngine` instead
+/// (kept as a differential oracle).
 func makeDefaultEngine(clientID: UInt64?, gc: Bool) -> any YEngine {
-    YrsEngine(clientID: clientID, gc: gc)
+    if ProcessInfo.processInfo.environment["YSWIFT_ENGINE"] == "yrs" {
+        return YrsEngine(clientID: clientID, gc: gc)
+    }
+    return NativeEngine(clientID: clientID, gc: gc)
 }
 
 /// Boxes an opaque transaction pointer so it can ride inside `YTransaction.raw`.

@@ -113,6 +113,62 @@ final class NativeStore {
         return s
     }
 
+    /// Snapshot of `client -> next clock` for every known client.
+    func snapshotState() -> [UInt64: UInt64] {
+        var state: [UInt64: UInt64] = [:]
+        for client in self.clients.keys { state[client] = self.getState(client) }
+        return state
+    }
+
+    /// Transaction cleanup: replaces deleted content with `ContentDeleted` (GC with
+    /// `parentGCd == false`) and merges adjacent compatible structs. Ports the
+    /// `tryGcDeleteSet` + per-client `tryToMergeWithLefts` cleanup. Runs over every
+    /// client, which is safe because already-merged runs are left untouched.
+    func cleanup() {
+        for client in self.clients.keys {
+            self.garbageCollect(client)
+            self.mergeClient(client)
+        }
+    }
+
+    private func garbageCollect(_ client: UInt64) {
+        guard let structs = clients[client] else { return }
+        for s in structs {
+            guard let item = s as? Item, item.deleted else { continue }
+            if case .deleted = item.content { continue }
+            item.content = .deleted(item.length)
+        }
+    }
+
+    private func mergeClient(_ client: UInt64) {
+        guard var structs = clients[client], structs.count > 1 else { return }
+        var index = structs.count - 1
+        while index >= 1 {
+            index -= 1 + self.tryToMergeWithLefts(&structs, index)
+        }
+        clients[client] = structs
+    }
+
+    /// Merges `structs[pos]` leftward into contiguous compatible structs, removing
+    /// absorbed entries. Returns how many were merged away (`tryToMergeWithLefts`).
+    private func tryToMergeWithLefts(_ structs: inout [Struct], _ pos: Int) -> Int {
+        var right = structs[pos]
+        var left = structs[pos - 1]
+        var index = pos
+        while index > 0 {
+            if left.isDeleted == right.isDeleted, type(of: left) == type(of: right), left.mergeWith(right) {
+                index -= 1
+                right = left
+                if index > 0 { left = structs[index - 1] }
+                continue
+            }
+            break
+        }
+        let merged = pos - index
+        if merged > 0 { structs.removeSubrange((pos + 1 - merged)...pos) }
+        return merged
+    }
+
     /// Applies a decoded delete set: splits at range boundaries and marks the
     /// covered items deleted (`readAndApplyDeleteSet`, without the pending buffer).
     func applyDeleteSet(_ deleteSet: DeleteSetData) {

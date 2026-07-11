@@ -105,6 +105,27 @@ enum Content {
         }
     }
 
+    /// Whether `other` is the same content kind (for merge eligibility).
+    func sameKind(as other: Content) -> Bool { self.ref == other.ref }
+
+    /// Appends `other`'s payload to `self` if the kind supports it
+    /// (`AbstractContent.mergeWith`). Only string/deleted/any/json merge.
+    mutating func mergeWith(_ other: Content) -> Bool {
+        switch (self, other) {
+        case (.string(let lhs), .string(let rhs)):
+            self = .string(lhs + rhs)
+        case (.deleted(let lhs), .deleted(let rhs)):
+            self = .deleted(lhs + rhs)
+        case (.any(let lhs), .any(let rhs)):
+            self = .any(lhs + rhs)
+        case (.json(let lhs), .json(let rhs)):
+            self = .json(lhs + rhs)
+        default:
+            return false
+        }
+        return true
+    }
+
     /// Writes the content payload, dropping the first `offset` clocks
     /// (`AbstractContent.write`).
     func write(into encoder: inout Lib0Encoder, offset: Int) {
@@ -168,10 +189,24 @@ class Struct {
         encoder.writeUInt8(0)
         encoder.writeVarUint(self.length - UInt64(offset))
     }
+
+    /// Whether this struct counts as deleted for merge/delete-set purposes.
+    var isDeleted: Bool { false }
+
+    /// Absorbs the adjacent right-hand struct if compatible (`AbstractStruct.mergeWith`).
+    func mergeWith(_ right: Struct) -> Bool { false }
 }
 
 /// A garbage-collected range — occupies clocks but carries no content.
-final class GCStruct: Struct {}
+final class GCStruct: Struct {
+    override var isDeleted: Bool { true }
+
+    override func mergeWith(_ right: Struct) -> Bool {
+        guard right is GCStruct, self.id.clock + self.length == right.id.clock else { return false }
+        self.length += right.length
+        return true
+    }
+}
 
 /// A gap in a client's clock range (`readClientsStructRefs` emits these; they are
 /// never integrated).
@@ -406,6 +441,27 @@ final class Item: Struct {
             }
         }
         self.content.write(into: &encoder, offset: offset)
+    }
+
+    override var isDeleted: Bool { self.deleted }
+
+    /// Merges the adjacent right item into this one when they form a contiguous,
+    /// same-origin, same-content, same-deleted run (`Item.mergeWith`).
+    override func mergeWith(_ right: Struct) -> Bool {
+        guard let right = right as? Item,
+            sameID(right.origin, self.lastId),
+            self.right === right,
+            sameID(self.rightOrigin, right.rightOrigin),
+            self.id.client == right.id.client,
+            self.id.clock + self.length == right.id.clock,
+            self.deleted == right.deleted,
+            self.content.sameKind(as: right.content),
+            self.content.mergeWith(right.content)
+        else { return false }
+        self.right = right.right
+        (right.right as? Item)?.left = self
+        self.length += right.length
+        return true
     }
 
     /// Marks the item deleted and keeps parent length in sync (`Item.delete`).

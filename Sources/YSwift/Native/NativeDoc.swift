@@ -14,9 +14,14 @@ private final class ClientRefs {
 }
 
 final class NativeDoc {
+    let clientID: UInt64
     let store = NativeStore()
     /// Root types by name (yjs `doc.share`).
     private(set) var share: [String: YTypeImpl] = [:]
+
+    init(clientID: UInt64 = 0) {
+        self.clientID = clientID
+    }
 
     /// Fetches or creates the root type `name` (yjs `doc.get`).
     func get(_ name: String) -> YTypeImpl {
@@ -24,6 +29,18 @@ final class NativeDoc {
         let type = YTypeImpl(name: name)
         self.share[name] = type
         return type
+    }
+
+    /// A locally-editable text handle over root type `name`.
+    func text(_ name: String) -> NativeText {
+        NativeText(doc: self, type: self.get(name))
+    }
+
+    /// Runs a local edit and cleans up (GC deleted content + merge structs) so the
+    /// store matches yjs after the equivalent transaction.
+    func transact(_ body: () -> Void) {
+        body()
+        self.store.cleanup()
     }
 
     // MARK: Apply

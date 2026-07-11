@@ -61,13 +61,20 @@ private struct ContainerFixtures: Decodable {
     let xml: [XmlCase]
 }
 
-@Suite("native containers (Y.Array / Y.Map)")
+@Suite("native containers (Y.Array / Y.Map / Y.Xml)")
 struct NativeContainerTests {
     private func fixtures() throws -> ContainerFixtures {
         let url = try #require(
             Bundle.module.url(forResource: "golden_v13_6_31", withExtension: "json", subdirectory: "Fixtures")
         )
         return try JSONDecoder().decode(ContainerFixtures.self, from: Data(contentsOf: url))
+    }
+
+    /// Containers are a native-engine-only feature, so build the doc on the native
+    /// engine explicitly (independent of the YSWIFT_ENGINE default) — YrsEngine
+    /// traps on container calls.
+    private func doc(clientID: UInt64) -> YDoc {
+        YDoc(engine: NativeEngine(clientID: clientID, gc: true))
     }
 
     private func values(fromJSON json: String) throws -> [YValue] {
@@ -77,7 +84,7 @@ struct NativeContainerTests {
     @Test("array ops reproduce byte-exact update + state vector and materialise")
     func arrayConformance() throws {
         for fixture in try self.fixtures().array {
-            let doc = YDoc(clientID: fixture.clientID)
+            let doc = self.doc(clientID: fixture.clientID)
             let array = doc.array("content")
             doc.transact { txn in
                 for op in fixture.ops {
@@ -102,7 +109,7 @@ struct NativeContainerTests {
     @Test("map ops reproduce byte-exact update + state vector and materialise")
     func mapConformance() throws {
         for fixture in try self.fixtures().map {
-            let doc = YDoc(clientID: fixture.clientID)
+            let doc = self.doc(clientID: fixture.clientID)
             let map = doc.map("content")
             doc.transact { txn in
                 for op in fixture.ops {
@@ -128,7 +135,7 @@ struct NativeContainerTests {
     @Test("xml ops reproduce byte-exact update + state vector and serialise")
     func xmlConformance() throws {
         for fixture in try self.fixtures().xml {
-            let doc = YDoc(clientID: fixture.clientID)
+            let doc = self.doc(clientID: fixture.clientID)
             let fragment = doc.xmlFragment("content")
             doc.transact { txn in fragment.insert(txn, at: 0, fixture.nodes.map(\.node)) }
             doc.transact { txn in

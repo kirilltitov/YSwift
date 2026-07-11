@@ -106,8 +106,7 @@ private func textObserverTrampoline(_ userData: UnsafeMutableRawPointer?, _ ptr:
     guard let userData else { return }
     let box = Unmanaged<TextObserverBox>.fromOpaque(userData).takeUnretainedValue()
     let data = (len > 0 && ptr != nil) ? Data(bytes: ptr!, count: len) : Data()
-    let delta = (try? JSONDecoder().decode([DeltaOpDTO].self, from: data))?.compactMap { $0.toDelta() } ?? []
-    box.callback(YTextEvent(delta: delta))
+    box.callback(YTextEvent(delta: .decodeDelta(from: data)))
 }
 
 /// Phase-1 engine: a facade over the Rust `yrs` CRDT via the `cyrs` C ABI.
@@ -224,9 +223,7 @@ final class YrsEngine: YEngine, @unchecked Sendable {
         let name = Array(handle.name.utf8)
         var outLen = 0
         let ptr = name.withUnsafeBufferPointer { n in ytext_delta(t, n.baseAddress, n.count, &outLen) }
-        let data = self.consumeBytes(ptr, outLen)
-        guard let ops = try? JSONDecoder().decode([DeltaOpDTO].self, from: data) else { return [] }
-        return ops.compactMap { $0.toDelta() }
+        return .decodeDelta(from: self.consumeBytes(ptr, outLen))
     }
 
     // MARK: Encoding & sync
@@ -423,21 +420,5 @@ final class YrsEngine: YEngine, @unchecked Sendable {
         // stays cross-platform and free of Objective-C-legacy APIs.
         guard let data = try? JSONEncoder().encode(attrs) else { return Array("{}".utf8) }
         return Array(data)
-    }
-}
-
-/// Wire shape of one delta op (insert / retain / delete), used by `toDelta` and
-/// the text change observer.
-private struct DeltaOpDTO: Decodable {
-    let insert: YValue?
-    let retain: Int?
-    let delete: Int?
-    let attributes: [String: YValue]?
-
-    func toDelta() -> Delta? {
-        if let insert { return .insert(insert, attributes: self.attributes) }
-        if let retain { return .retain(retain, attributes: self.attributes) }
-        if let delete { return .delete(delete) }
-        return nil
     }
 }

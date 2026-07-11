@@ -139,9 +139,9 @@ final class NativeStore {
     /// `parentGCd == false`) and merges adjacent compatible structs. Ports the
     /// `tryGcDeleteSet` + per-client `tryToMergeWithLefts` cleanup. Runs over every
     /// client, which is safe because already-merged runs are left untouched.
-    func cleanup() {
+    func cleanup(gc: Bool = true) {
         for client in self.clients.keys {
-            self.garbageCollect(client)
+            if gc { self.garbageCollect(client) }
             self.mergeClient(client)
         }
     }

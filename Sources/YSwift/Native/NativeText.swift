@@ -113,6 +113,9 @@ final class NativeText {
 
     var string: String { self.doc.getText(self.type.name ?? "") }
 
+    /// Visible length in UTF-16 code units (countable, non-deleted content).
+    var length: Int { self.type.length }
+
     // MARK: Public ops
 
     func insert(_ index: Int, _ text: String, attributes: [String: Lib0Any]? = nil) {

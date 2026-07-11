@@ -38,6 +38,14 @@ public final class YDoc: Sendable {
         self.clientID = engine.clientID
     }
 
+    /// Injects a specific engine. Internal seam for A/B differential testing
+    /// (NativeEngine vs YrsEngine); the public initializers always go through
+    /// `makeDefaultEngine`.
+    init(engine: any YEngine) {
+        self.engine = engine
+        self.clientID = engine.clientID
+    }
+
     /// Returns the top-level text type under `name` (analogue of Yjs `getText`).
     public func text(_ name: String) -> YText {
         YText(doc: self, handle: self.engine.textHandle(name))

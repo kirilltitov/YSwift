@@ -15,12 +15,16 @@ private final class ClientRefs {
 
 final class NativeDoc {
     let clientID: UInt64
+    /// When false, deleted content is kept verbatim (no GC to `ContentDeleted`) —
+    /// matches `new Y.Doc({ gc: false })`.
+    let gc: Bool
     let store = NativeStore()
     /// Root types by name (yjs `doc.share`).
     private(set) var share: [String: YTypeImpl] = [:]
 
-    init(clientID: UInt64 = 0) {
+    init(clientID: UInt64 = 0, gc: Bool = true) {
         self.clientID = clientID
+        self.gc = gc
     }
 
     /// Fetches or creates the root type `name` (yjs `doc.get`).
@@ -36,35 +40,61 @@ final class NativeDoc {
         NativeText(doc: self, type: self.get(name))
     }
 
-    private var inTransaction = false
-    private var updateHandlers: [([UInt8]) -> Void] = []
+    private var txnDepth = 0
+    private var txnBeforeState: [UInt64: UInt64] = [:]
+    private var txnOrigin: Origin?
+    private var updateHandlers: [(id: Int, handler: ([UInt8], Origin?) -> Void)] = []
+    private var nextHandlerID = 0
 
     /// Registers a handler fired with each transaction's v1 update (yjs `on('update')`).
-    func onUpdate(_ handler: @escaping ([UInt8]) -> Void) {
-        self.updateHandlers.append(handler)
+    /// Returns an id for `removeUpdateHandler`.
+    @discardableResult
+    func onUpdate(_ handler: @escaping ([UInt8], Origin?) -> Void) -> Int {
+        let id = self.nextHandlerID
+        self.nextHandlerID += 1
+        self.updateHandlers.append((id, handler))
+        return id
     }
 
-    /// Runs a local edit and, on the outermost call, cleans up (GC deleted content +
-    /// merge structs) and emits the transaction's incremental update to `onUpdate`
-    /// handlers. Nested calls join the active transaction.
-    func transact(_ body: () -> Void) {
-        if self.inTransaction {
-            body()
-            return
+    func removeUpdateHandler(_ id: Int) {
+        self.updateHandlers.removeAll { $0.id == id }
+    }
+
+    /// Opens (or joins) a transaction. Only the outermost `begin`/`commit` pair
+    /// snapshots state, cleans up, and emits — nested ops just join it.
+    func beginTransaction(origin: Origin? = nil) {
+        if self.txnDepth == 0 {
+            self.txnBeforeState = self.store.snapshotState()
+            self.store.deleteLog = []
+            self.txnOrigin = origin
         }
-        self.inTransaction = true
-        let beforeState = self.store.snapshotState()
-        self.store.deleteLog = []
-        body()
-        self.store.cleanup()
+        self.txnDepth += 1
+    }
+
+    /// Closes a transaction; on the outermost close, cleans up (GC deleted content +
+    /// merge structs) and emits the transaction's incremental update.
+    func commitTransaction() {
+        guard self.txnDepth > 0 else { return }
+        self.txnDepth -= 1
+        guard self.txnDepth == 0 else { return }
+        self.store.cleanup(gc: self.gc)
         let deletes = self.store.deleteLog ?? []
         self.store.deleteLog = nil
-        self.inTransaction = false
+        let origin = self.txnOrigin
+        self.txnOrigin = nil
 
         guard !self.updateHandlers.isEmpty else { return }
-        if let update = self.encodeTransactionUpdate(beforeState: beforeState, deletes: deletes) {
-            for handler in self.updateHandlers { handler(update) }
+        if let update = self.encodeTransactionUpdate(beforeState: self.txnBeforeState, deletes: deletes) {
+            for entry in self.updateHandlers { entry.handler(update, origin) }
         }
+    }
+
+    /// Runs a local edit inside a transaction, cleaning up and emitting on the
+    /// outermost call. Nested calls join the active transaction.
+    func transact(origin: Origin? = nil, _ body: () -> Void) {
+        self.beginTransaction(origin: origin)
+        body()
+        self.commitTransaction()
     }
 
     /// Encodes the update emitted by a transaction: structs added since

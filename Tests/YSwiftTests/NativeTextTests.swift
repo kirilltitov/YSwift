@@ -126,7 +126,7 @@ struct NativeTextTests {
             let doc = NativeDoc(clientID: fixture.clientID)
             let text = doc.text(try self.rootName(self.bytes(fixture.updates[0])))
             var emitted: [[UInt8]] = []
-            doc.onUpdate { emitted.append($0) }
+            doc.onUpdate { update, _ in emitted.append(update) }
             for transaction in fixture.transactions {
                 doc.transact {
                     for op in transaction { self.apply(op, to: text) }

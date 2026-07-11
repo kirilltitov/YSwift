@@ -48,6 +48,7 @@ final class NativeStore {
             item.parent?.length -= Int(item.length)
         }
         item.markDeleted()
+        self.version += 1
         self.deleteLog?.append((item.id.client, item.id.clock, item.length))
         if let name = item.parent?.name { self.changedTypeNames?.insert(name) }
     }
@@ -69,9 +70,14 @@ final class NativeStore {
     /// progress when retrying buffered (out-of-order) updates.
     private(set) var integratedCount = 0
 
+    /// Bumped on every structural change (insert / delete) so cached search markers
+    /// can tell when they are stale.
+    private(set) var version = 0
+
     func addStruct(_ struct: Struct) {
         clients[`struct`.id.client, default: []].append(`struct`)
         self.integratedCount += 1
+        self.version += 1
         if let name = (`struct` as? Item)?.parent?.name { self.changedTypeNames?.insert(name) }
     }
 

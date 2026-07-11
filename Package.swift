@@ -40,5 +40,20 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
+        // Micro-benchmarks over the PUBLIC API. Select the backend with the
+        // YSWIFT_ENGINE env var (native default / yrs) and diff the two runs.
+        .executableTarget(
+            name: "YSwiftBench",
+            dependencies: ["YSwift"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-Lrust/cyrs/target/release", "-lcyrs"]),
+                .linkedLibrary("pthread", .when(platforms: [.linux])),
+                .linkedLibrary("dl", .when(platforms: [.linux])),
+                .linkedLibrary("m", .when(platforms: [.linux])),
+            ]
+        ),
     ]
 )

@@ -44,6 +44,7 @@ final class NativeDoc {
 
     private var txnDepth = 0
     private var txnBeforeState: [UInt64: UInt64] = [:]
+    private var txnStartIntegratedCount = 0
     private var txnOrigin: Origin?
 
     /// Update handlers, behind their own lock so `removeUpdateHandler` (called from
@@ -97,6 +98,7 @@ final class NativeDoc {
     func beginTransaction(origin: Origin? = nil) {
         if self.txnDepth == 0 {
             self.txnBeforeState = self.store.snapshotState()
+            self.txnStartIntegratedCount = self.store.integratedCount
             self.store.deleteLog = []
             self.store.changedTypeNames = []
             self.txnOrigin = origin
@@ -114,16 +116,18 @@ final class NativeDoc {
         let deletes = self.store.deleteLog ?? []
         let changed = self.store.changedTypeNames ?? []
         let origin = self.txnOrigin
-
         let beforeState = self.txnBeforeState
+        // A read-only transaction (no structs added, no deletes) needs no cleanup,
+        // observer firing, or emission — skip the whole-store scan.
+        let mutated = self.store.integratedCount != self.txnStartIntegratedCount || !deletes.isEmpty
 
         // 1. Text observers run BEFORE cleanup — merging/GC would hide which items
         //    were added this transaction (yjs fires observers, then merges).
-        self.fireTextObservers(changed: changed, deletes: deletes)
+        if mutated { self.fireTextObservers(changed: changed, deletes: deletes) }
 
         // 2. afterTransaction handlers (e.g. UndoManager capture) — also BEFORE
         //    cleanup, so `keepItem` can protect deleted content from the GC below.
-        if !self.afterTransactionHandlers.isEmpty {
+        if mutated, !self.afterTransactionHandlers.isEmpty {
             let info = TransactionInfo(
                 beforeState: beforeState, afterState: self.store.snapshotState(),
                 deletes: deletes, changedNames: changed, origin: origin)
@@ -131,7 +135,7 @@ final class NativeDoc {
         }
 
         // 3. Cleanup so the emitted update encodes the merged/GC'd store byte-exactly.
-        self.store.cleanup(gc: self.gc)
+        if mutated { self.store.cleanup(gc: self.gc) }
         self.store.deleteLog = nil
         self.store.changedTypeNames = nil
         self.txnOrigin = nil
@@ -415,6 +419,7 @@ final class NativeDoc {
     func getText(_ name: String) -> String {
         guard let type = share[name] else { return "" }
         var units: [UInt16] = []
+        units.reserveCapacity(type.length)
         var node = type.start
         while let item = node {
             if !item.deleted, case .string(let value) = item.content {
@@ -443,6 +448,8 @@ final class NativeDoc {
     /// An empty `target` writes the whole document.
     func encodeStateAsUpdate(target: [UInt64: UInt64] = [:]) -> [UInt8] {
         var encoder = Lib0Encoder()
+        let structCount = self.store.clients.values.reduce(0) { $0 + $1.count }
+        encoder.reserveCapacity(structCount * 8 + 64)
         self.writeClientsStructs(&encoder, target: target)
         self.writeDeleteSet(&encoder)
         return encoder.bytes

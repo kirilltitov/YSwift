@@ -8,6 +8,11 @@ struct Lib0Encoder {
 
     init() {}
 
+    /// Pre-sizes the backing buffer to avoid repeated reallocations on large writes.
+    mutating func reserveCapacity(_ minimumCapacity: Int) {
+        self.bytes.reserveCapacity(minimumCapacity)
+    }
+
     mutating func writeUInt8(_ byte: UInt8) {
         self.bytes.append(byte)
     }

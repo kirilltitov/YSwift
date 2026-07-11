@@ -404,6 +404,9 @@ final class Item: Struct {
         if case .type(let type, _, _) = self.content {
             type.item = self  // ContentType.integrate
         }
+        if case .format = self.content {
+            parent.hasFormatting = true  // disables search markers (attribute-safe)
+        }
 
         if (parent.item?.deleted ?? false) || (self.parentSub != nil && self.right != nil) {
             store.deleteItem(self)
@@ -482,6 +485,15 @@ final class YTypeImpl {
     var length: Int = 0
     weak var item: Item?
     let name: String?
+
+    /// Cached search marker (`findPosition` hint): `markerItem` starts at absolute
+    /// index `markerIndex`, valid while `markerVersion == store.version`.
+    weak var markerItem: Item?
+    var markerIndex: Int = 0
+    var markerVersion: Int = -1
+    /// Once any formatting item lives under this type, search markers are disabled
+    /// (a mid-list start would miss the running attributes).
+    var hasFormatting = false
 
     init(name: String? = nil) {
         self.name = name

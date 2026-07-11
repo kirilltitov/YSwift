@@ -159,8 +159,22 @@ final class NativeText {
     // MARK: Position
 
     private func findPosition(_ index: Int) -> TextPosition {
-        let pos = TextPosition(left: nil, right: self.type.start, index: 0, attributes: [:])
-        var count = index
+        let store = self.doc.store
+        let pos: TextPosition
+        var count: Int
+        // Fast path: resume from the cached marker (only when the type has no
+        // formatting — a mid-list start would drop the running attributes — and the
+        // marker hasn't been invalidated by another structural change).
+        if !self.type.hasFormatting, self.type.markerVersion == store.version,
+            let marker = self.type.markerItem, !marker.deleted, self.type.markerIndex <= index
+        {
+            pos = TextPosition(
+                left: marker.left as? Item, right: marker, index: self.type.markerIndex, attributes: [:])
+            count = index - self.type.markerIndex
+        } else {
+            pos = TextPosition(left: nil, right: self.type.start, index: 0, attributes: [:])
+            count = index
+        }
         while let right = pos.right, count > 0 {
             if case .format(let key, let value) = right.content {
                 if !right.deleted { pos.apply(format: key, value) }
@@ -203,10 +217,17 @@ final class NativeText {
         for key in pos.attributes.keys where attributes[key] == nil { attributes[key] = "null" }
         self.minimizeAttributeChanges(pos, attributes)
         let negated = self.insertAttributes(pos, attributes)
+        let insertIndex = pos.index
         let item = self.makeItem(pos, content: .string(text))
         pos.right = item
         pos.forward()
         self.insertNegatedAttributes(pos, negated)
+        // Cache the insertion as a search marker so sequential typing is O(1) amortized.
+        if !self.type.hasFormatting {
+            self.type.markerItem = item
+            self.type.markerIndex = insertIndex
+            self.type.markerVersion = self.doc.store.version
+        }
     }
 
     private func minimizeAttributeChanges(_ pos: TextPosition, _ attributes: [String: String]) {

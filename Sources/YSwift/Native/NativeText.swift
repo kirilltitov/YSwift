@@ -260,7 +260,7 @@ final class NativeText {
                             if length == 0 { break }
                             negated[format.key] = format.value
                         }
-                        right.delete()
+                        self.doc.store.deleteItem(right)
                     } else {
                         pos.attributes[format.key] = format.value
                     }
@@ -298,7 +298,7 @@ final class NativeText {
                             YID(client: right.id.client, clock: right.id.clock + UInt64(length)))
                     }
                     length -= Int(right.length)
-                    right.delete()
+                    self.doc.store.deleteItem(right)
                 default:
                     break
                 }
@@ -331,7 +331,7 @@ final class NativeText {
             if !current.deleted, let format = formatContent(current) {
                 let startAttrValue = startAttributes[format.key]
                 if endFormats[format.key]?.item !== current || equalAttrs(startAttrValue, format.value) {
-                    current.delete()
+                    self.doc.store.deleteItem(current)
                     if !reachedCurr, equalAttrs(currentAttributes[format.key], format.value),
                         !equalAttrs(startAttrValue, format.value)
                     {

@@ -386,7 +386,7 @@ final class Item: Struct {
             rightItem.left = self
         } else if let parentSub {
             parent.map[parentSub] = self
-            (self.left as? Item)?.delete()
+            if let leftItem = self.left as? Item { store.deleteItem(leftItem) }
         }
 
         if self.parentSub == nil, self.countable, !self.deleted {
@@ -399,7 +399,7 @@ final class Item: Struct {
         }
 
         if (parent.item?.deleted ?? false) || (self.parentSub != nil && self.right != nil) {
-            self.delete()
+            store.deleteItem(self)
         }
     }
 
@@ -462,15 +462,6 @@ final class Item: Struct {
         (right.right as? Item)?.left = self
         self.length += right.length
         return true
-    }
-
-    /// Marks the item deleted and keeps parent length in sync (`Item.delete`).
-    func delete() {
-        guard !self.deleted else { return }
-        if self.countable, self.parentSub == nil {
-            self.parent?.length -= Int(self.length)
-        }
-        self.markDeleted()
     }
 }
 

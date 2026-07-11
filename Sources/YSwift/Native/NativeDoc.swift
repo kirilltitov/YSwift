@@ -36,11 +36,80 @@ final class NativeDoc {
         NativeText(doc: self, type: self.get(name))
     }
 
-    /// Runs a local edit and cleans up (GC deleted content + merge structs) so the
-    /// store matches yjs after the equivalent transaction.
+    private var inTransaction = false
+    private var updateHandlers: [([UInt8]) -> Void] = []
+
+    /// Registers a handler fired with each transaction's v1 update (yjs `on('update')`).
+    func onUpdate(_ handler: @escaping ([UInt8]) -> Void) {
+        self.updateHandlers.append(handler)
+    }
+
+    /// Runs a local edit and, on the outermost call, cleans up (GC deleted content +
+    /// merge structs) and emits the transaction's incremental update to `onUpdate`
+    /// handlers. Nested calls join the active transaction.
     func transact(_ body: () -> Void) {
+        if self.inTransaction {
+            body()
+            return
+        }
+        self.inTransaction = true
+        let beforeState = self.store.snapshotState()
+        self.store.deleteLog = []
         body()
         self.store.cleanup()
+        let deletes = self.store.deleteLog ?? []
+        self.store.deleteLog = nil
+        self.inTransaction = false
+
+        guard !self.updateHandlers.isEmpty else { return }
+        if let update = self.encodeTransactionUpdate(beforeState: beforeState, deletes: deletes) {
+            for handler in self.updateHandlers { handler(update) }
+        }
+    }
+
+    /// Encodes the update emitted by a transaction: structs added since
+    /// `beforeState` plus the transaction's own (sorted, merged) delete set. Returns
+    /// nil when nothing changed (`writeUpdateMessageFromTransaction`).
+    private func encodeTransactionUpdate(
+        beforeState: [UInt64: UInt64], deletes: [(client: UInt64, clock: UInt64, length: UInt64)]
+    ) -> [UInt8]? {
+        let structsChanged = self.store.clients.keys.contains { self.store.getState($0) != (beforeState[$0] ?? 0) }
+        guard structsChanged || !deletes.isEmpty else { return nil }
+        var encoder = Lib0Encoder()
+        self.writeClientsStructs(&encoder, target: beforeState)
+        self.writeTransactionDeleteSet(&encoder, deletes)
+        return encoder.bytes
+    }
+
+    private func writeTransactionDeleteSet(
+        _ encoder: inout Lib0Encoder, _ deletes: [(client: UInt64, clock: UInt64, length: UInt64)]
+    ) {
+        var byClient: [UInt64: [(clock: UInt64, length: UInt64)]] = [:]
+        for delete in deletes { byClient[delete.client, default: []].append((delete.clock, delete.length)) }
+        var perClient: [(client: UInt64, ranges: [(clock: UInt64, length: UInt64)])] = []
+        for (client, ranges) in byClient {
+            let sorted = ranges.sorted { $0.clock < $1.clock }
+            var merged: [(clock: UInt64, length: UInt64)] = []
+            for range in sorted {
+                if let last = merged.last, last.clock + last.length >= range.clock {
+                    let end = max(last.clock + last.length, range.clock + range.length)
+                    merged[merged.count - 1] = (last.clock, end - last.clock)
+                } else {
+                    merged.append(range)
+                }
+            }
+            perClient.append((client, merged))
+        }
+        perClient.sort { $0.client > $1.client }
+        encoder.writeVarUint(UInt64(perClient.count))
+        for entry in perClient {
+            encoder.writeVarUint(entry.client)
+            encoder.writeVarUint(UInt64(entry.ranges.count))
+            for range in entry.ranges {
+                encoder.writeVarUint(range.clock)
+                encoder.writeVarUint(range.length)
+            }
+        }
     }
 
     // MARK: Apply

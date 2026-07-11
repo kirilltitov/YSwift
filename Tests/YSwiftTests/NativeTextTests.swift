@@ -23,7 +23,15 @@ private struct TextFixtures: Decodable {
         let stateVector: String
         let update: String
     }
+    struct Incremental: Decodable {
+        let name: String
+        let clientID: UInt64
+        let transactions: [[Op]]
+        let updates: [String]
+        let text: String
+    }
     let encode: [Encode]
+    let incremental: [Incremental]
 }
 
 // A JSON attribute value limited to what the fixtures use.
@@ -58,11 +66,11 @@ private enum AttrValue: Decodable {
 
 @Suite("native text (local ops)")
 struct NativeTextTests {
-    private func fixtures() throws -> [TextFixtures.Encode] {
+    private func fixtures() throws -> TextFixtures {
         let url = try #require(
             Bundle.module.url(forResource: "golden_v13_6_31", withExtension: "json", subdirectory: "Fixtures")
         )
-        return try JSONDecoder().decode(TextFixtures.self, from: Data(contentsOf: url)).encode
+        return try JSONDecoder().decode(TextFixtures.self, from: Data(contentsOf: url))
     }
 
     private func bytes(_ base64: String) throws -> [UInt8] {
@@ -80,24 +88,22 @@ struct NativeTextTests {
         return "text"
     }
 
-    private func replay(_ fixture: TextFixtures.Encode, into text: NativeText) {
-        for op in fixture.ops {
-            let attributes = op.attributes?.mapValues(\.lib0)
-            switch op.op {
-            case "insert": text.insert(op.index, op.text ?? "", attributes: attributes)
-            case "delete": text.delete(op.index, op.length ?? 0)
-            case "format": text.format(op.index, op.length ?? 0, attributes: attributes ?? [:])
-            default: Issue.record("unknown op \(op.op)")
-            }
+    private func apply(_ op: TextFixtures.Op, to text: NativeText) {
+        let attributes = op.attributes?.mapValues(\.lib0)
+        switch op.op {
+        case "insert": text.insert(op.index, op.text ?? "", attributes: attributes)
+        case "delete": text.delete(op.index, op.length ?? 0)
+        case "format": text.format(op.index, op.length ?? 0, attributes: attributes ?? [:])
+        default: Issue.record("unknown op \(op.op)")
         }
     }
 
     @Test("replaying the ops reproduces the text and the Quill delta")
     func textAndDelta() throws {
-        for fixture in try self.fixtures() {
+        for fixture in try self.fixtures().encode {
             let doc = NativeDoc(clientID: fixture.clientID)
             let text = doc.text(try self.rootName(self.bytes(fixture.update)))
-            self.replay(fixture, into: text)
+            for op in fixture.ops { self.apply(op, to: text) }
             #expect(text.string == fixture.text, "\(fixture.name): text")
             #expect(text.toDeltaJSON() == fixture.deltaJSON, "\(fixture.name): delta")
         }
@@ -105,12 +111,30 @@ struct NativeTextTests {
 
     @Test("replaying the ops produces the byte-exact update and state vector")
     func updateAndStateVector() throws {
-        for fixture in try self.fixtures() {
+        for fixture in try self.fixtures().encode {
             let doc = NativeDoc(clientID: fixture.clientID)
             let text = doc.text(try self.rootName(self.bytes(fixture.update)))
-            self.replay(fixture, into: text)
+            for op in fixture.ops { self.apply(op, to: text) }
             #expect(doc.encodeStateAsUpdate() == (try self.bytes(fixture.update)), "\(fixture.name): update")
             #expect(doc.encodeStateVector() == (try self.bytes(fixture.stateVector)), "\(fixture.name): state vector")
+        }
+    }
+
+    @Test("each transaction emits a byte-identical incremental update")
+    func incrementalUpdates() throws {
+        for fixture in try self.fixtures().incremental {
+            let doc = NativeDoc(clientID: fixture.clientID)
+            let text = doc.text(try self.rootName(self.bytes(fixture.updates[0])))
+            var emitted: [[UInt8]] = []
+            doc.onUpdate { emitted.append($0) }
+            for transaction in fixture.transactions {
+                doc.transact {
+                    for op in transaction { self.apply(op, to: text) }
+                }
+            }
+            let expected = try fixture.updates.map(self.bytes)
+            #expect(emitted == expected, "\(fixture.name): emitted \(emitted.count) updates")
+            #expect(text.string == fixture.text, "\(fixture.name): text")
         }
     }
 }

@@ -32,6 +32,21 @@ final class NativeStore {
     /// Per-client structs, clock-ascending. The sole strong owner of every struct.
     var clients: [UInt64: [Struct]] = [:]
 
+    /// When non-nil, `deleteItem` logs `(client, clock, length)` for the deletes made
+    /// during the current transaction (used to build the emitted update's delete set).
+    var deleteLog: [(client: UInt64, clock: UInt64, length: UInt64)]?
+
+    /// Marks `item` deleted, keeps parent length in sync, and records the deletion
+    /// for the active transaction (`Item.delete`).
+    func deleteItem(_ item: Item) {
+        guard !item.deleted else { return }
+        if item.countable, item.parentSub == nil {
+            item.parent?.length -= Int(item.length)
+        }
+        item.markDeleted()
+        self.deleteLog?.append((item.id.client, item.id.clock, item.length))
+    }
+
     /// Next expected clock for `client` (0 if unseen).
     func getState(_ client: UInt64) -> UInt64 {
         guard let structs = clients[client], let last = structs.last else { return 0 }
@@ -192,7 +207,7 @@ final class NativeStore {
                         if clockEnd < item.id.clock + item.length {
                             structs.insert(splitItem(item, Int(clockEnd - item.id.clock)), at: index)
                         }
-                        item.delete()
+                        self.deleteItem(item)
                     }
                 }
             }

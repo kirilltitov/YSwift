@@ -122,15 +122,28 @@ final class NativeEngine: YEngine, @unchecked Sendable {
     func undoManagerCanRedo(_ mgr: AnyObject) -> Bool { false }
     func undoManagerStopCapturing(_ mgr: AnyObject) {}
 
-    func makeAwareness() -> AnyObject? { nil }
-    func awarenessSetLocalState(_ aw: AnyObject, json: Data) {}
-    func awarenessCleanLocalState(_ aw: AnyObject) {}
-    func awarenessRemoveState(_ aw: AnyObject, client: UInt64) {}
-    func awarenessStates(_ aw: AnyObject) -> Data { Data() }
-    func awarenessEncodeUpdate(_ aw: AnyObject, clients: [UInt64]?) -> Data { Data() }
-    func awarenessApplyUpdate(_ aw: AnyObject, _ update: Data) -> Bool { false }
+    func makeAwareness() -> AnyObject? { NativeAwareness(clientID: self.doc.clientID) }
+
+    private func awareness(_ aw: AnyObject) -> NativeAwareness? { aw as? NativeAwareness }
+
+    func awarenessSetLocalState(_ aw: AnyObject, json: Data) {
+        self.awareness(aw)?.setLocalState(String(decoding: json, as: UTF8.self))
+    }
+    func awarenessCleanLocalState(_ aw: AnyObject) { self.awareness(aw)?.cleanLocalState() }
+    func awarenessRemoveState(_ aw: AnyObject, client: UInt64) { self.awareness(aw)?.removeState(client) }
+    func awarenessStates(_ aw: AnyObject) -> Data { self.awareness(aw).map { Data($0.statesJSON()) } ?? Data() }
+    func awarenessEncodeUpdate(_ aw: AnyObject, clients: [UInt64]?) -> Data {
+        self.awareness(aw).map { Data($0.encodeUpdate(clients: clients)) } ?? Data()
+    }
+    func awarenessApplyUpdate(_ aw: AnyObject, _ update: Data) -> Bool {
+        self.awareness(aw)?.applyUpdate(Array(update)) ?? false
+    }
     func awarenessOnChange(_ aw: AnyObject, _ callback: @escaping @Sendable (Awareness.Change) -> Void) -> YSubscription
-    { YSubscription {} }
+    {
+        guard let awareness = self.awareness(aw) else { return YSubscription {} }
+        let id = awareness.onChange(callback)
+        return YSubscription { awareness.removeOnChange(id) }
+    }
 
     func destroy() {}
 

@@ -130,6 +130,59 @@ struct NativeEngineGoldenTests {
         #expect(deltas.last == [.delete(1)])
     }
 
+    @Test("Awareness syncs local state between peers")
+    func awarenessSync() {
+        let docA = self.doc(clientID: 1)
+        let awA = Awareness(docA)
+        awA.setLocalStateField("name", "Alice")
+        awA.setLocalStateField("color", "#f00")
+
+        let docB = self.doc(clientID: 2)
+        let awB = Awareness(docB)
+        awB.applyUpdate(awA.encodeUpdate())
+
+        let states = awB.states()
+        #expect(states[1]?["name"] == .string("Alice"))
+        #expect(states[1]?["color"] == .string("#f00"))
+    }
+
+    @Test("Awareness onChange reports newly-added clients")
+    func awarenessOnChange() {
+        let docB = self.doc(clientID: 2)
+        let awB = Awareness(docB)
+        let added = Mutex<[UInt64]>([])
+        let sub = awB.onChange { change in added.withLock { $0.append(contentsOf: change.added) } }
+
+        let docA = self.doc(clientID: 1)
+        let awA = Awareness(docA)
+        awA.setLocalStateField("x", 1)
+        awB.applyUpdate(awA.encodeUpdate())
+        sub.cancel()
+
+        #expect(added.withLock { $0 }.contains(1))
+    }
+
+    @Test("Awareness.encodeUpdate(clients:) restricts the update to the given clients")
+    func awarenessEncodeSubset() {
+        let docA = self.doc(clientID: 1)
+        let awA = Awareness(docA)
+        awA.setLocalStateField("n", "A")
+
+        let docB = self.doc(clientID: 2)
+        let awB = Awareness(docB)
+        awB.setLocalStateField("n", "B")
+        awB.applyUpdate(awA.encodeUpdate())
+
+        let subset = awB.encodeUpdate(clients: [1])
+        let docC = self.doc(clientID: 3)
+        let awC = Awareness(docC)
+        awC.applyUpdate(subset)
+
+        let states = awC.states()
+        #expect(states[1]?["n"] == .string("A"))
+        #expect(states[2] == nil)
+    }
+
     @Test("StickyIndex encodes byte-compatibly and resolves through edits")
     func stickyConformance() throws {
         let suite = try Golden.loadSuite()

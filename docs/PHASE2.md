@@ -30,6 +30,29 @@ Locked design decisions (from the feasibility analysis):
 `ycs` (C#) is a near-line-by-line v13 port with a bundled `lib0`; used as a
 structural **reference map**, not copied.
 
+## Status (current)
+
+**Phase 2 is complete and `NativeEngine` is the default engine.** `YrsEngine`
+remains as a differential oracle (`YSWIFT_ENGINE=yrs`); the default runtime path
+uses no Rust. Verified byte-for-byte against JS-Yjs v13.6.31 on macOS + Linux,
+both engines green.
+
+- **Task 1 (M1–M7): done.** Full §4 surface on the native engine — lib0 codec,
+  arena store, YATA integrate/apply, encode (full + diff), out-of-order pending
+  buffer, YText + `toDelta`, `onUpdate`+origin, `YUpdate.merge/diff`,
+  `StickyIndex`, `Awareness`, `UndoManager`, `text.observe`.
+- **Task 2 (partial): containers done** — `Y.Array`, `Y.Map`, `Y.Xml`
+  (fragment/element/text): build, materialise, byte-exact wire, concurrent
+  convergence. **Not done:** subdocuments, snapshots, V2 format, deep observers,
+  container `observe`, `YXmlHook`, mutating an already-integrated XML node.
+- **Verification:** golden vectors + concurrent-convergence fixtures + a recorded
+  randomised differential fuzz (text/array/map, applied in shuffled orders) +
+  adversarial code review of both the text engine and the containers.
+- **M8: done** — benchmark harness (`Sources/YSwiftBench`, `YSWIFT_ENGINE`
+  switch) + optimisation (search-marker for text, skip-cleanup on read txns).
+
+The milestone tables below are the original plan, kept for reference.
+
 ## Task 1 — native core + the current §4 API
 
 | Milestone | Content | Gate (oracle) |

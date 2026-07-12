@@ -15,8 +15,14 @@ is a frozen contract across Phase 1 (Yrs facade) and Phase 2 (native Swift).
   `YrsEngine` links `libcyrs.a` (on Linux also `-lpthread -ldl -lm`).
 - **Primary target: server (Linux).** Apple platforms supported as a bonus
   (`.macOS(.v15)`, `.iOS(.v18)` for `Synchronization.Mutex`).
-- **`Y.Array` for child reorder: not now** (requirements §8 / §11) — the block
-  tree lives in Postgres. Can be added later behind the same API.
+- **Container types (`Y.Array` / `Y.Map` / `Y.Xml*`): added as a native-engine
+  extension** (beyond §8, on request). They live only behind `NativeEngine`
+  (`YrsEngine` has trapping defaults — the `cyrs` FFI never wired them), so the
+  public `YArray`/`YMap`/`YXmlFragment` require the native default engine. Wire
+  output is byte-exact with yjs; the XML API builds subtrees declaratively
+  (`YXmlNode`). Subdocuments remain out of scope. Not yet: `YXmlHook`, mutating an
+  already-integrated XML node, nested containers *as values* inside array/map
+  (materialisation skips `ContentType`), container `observe` events.
 
 ## Idiomatic upgrades over the requirements' approximate signatures
 
@@ -54,8 +60,12 @@ is a frozen contract across Phase 1 (Yrs facade) and Phase 2 (native Swift).
   different order than yjs (which uses object insertion order). The result is
   **semantically identical and converges** — yjs applies our updates and vice
   versa — but the raw bytes differ from yjs for a *single* `format` call carrying
-  *multiple* attributes. Single-attribute formats are byte-identical. A native
-  Phase-2 engine can preserve order. (Characterized by the `semantic` fixture.)
+  *multiple* attributes. Single-attribute formats are byte-identical.
+  (Characterized by the `semantic` fixture.) **The native engine shares this
+  limitation** for the same root cause — the public `Attributes` (and XML
+  attribute) dictionaries are unordered, so a multi-attribute text `format` or
+  XML element is serialised in sorted-key order: deterministic and convergent,
+  byte-exact when the peer used the same order, a semantic match otherwise.
 - `UndoManager` and `Awareness` are **not `Sendable`** (single-context helpers);
   wrap in an actor if shared across connections. Their raw handles free on
   release, which must not race the document's edit path.

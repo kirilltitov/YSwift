@@ -4,10 +4,27 @@ A Swift port of the necessary subset of [Yjs](https://github.com/yjs/yjs) for
 **server-side Swift**, with **binary wire-compatibility with JS-Yjs** as the
 number-one correctness requirement.
 
-The public API is intentionally small: a single collaborative **text** type per
-document, plus synchronization/encoding, sticky positions, awareness and
-undo/redo. Container types (`Y.Map`/`Y.Array`/`Y.Xml*`) and subdocuments are
-**out of scope** — see [`DECISIONS.md`](DECISIONS.md).
+The required public API (requirements §4) is a single collaborative **text** type
+per document, plus synchronization/encoding, sticky positions, awareness and
+undo/redo. Container types (`Y.Map`/`Y.Array`/`Y.Xml*`) were originally out of
+scope (§8) but have since been added as a **native-engine extension** — see
+[`DECISIONS.md`](DECISIONS.md). Subdocuments remain out of scope.
+
+## Status
+
+The pure-Swift `NativeEngine` is the **default** backend; the Rust `YrsEngine`
+stays as a differential oracle (`YSWIFT_ENGINE=yrs`). Implemented and verified
+**byte-for-byte against JS-Yjs v13.6.31** on macOS + Linux:
+
+- **Text** — insert/delete/format, `toDelta`, sync/encoding (`applyUpdate`,
+  `encodeStateAsUpdate` full + diff, `encodeStateVector`), `YUpdate.merge/diff`,
+  out-of-order pending buffer, sticky index, awareness, undo/redo, observers.
+- **Containers** — `Y.Array`, `Y.Map`, `Y.Xml` (fragment/element/text): build,
+  materialise, and byte-exact wire output.
+
+Verification: golden vectors + concurrent convergence + a recorded randomised
+differential fuzz (text/array/map) + adversarial code review, all green on both
+engines. The default runtime path uses no Rust.
 
 ## Two-phase plan
 

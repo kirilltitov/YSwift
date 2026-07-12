@@ -330,6 +330,103 @@ const containerConverge = [
   ], [{ op: 'set', key: 'k', value: 0 }]),
 ]
 
+// --- Randomised differential convergence fuzz (recorded; §10.3 property test). ---
+// Seeded so fixtures are reproducible: random concurrent ops on a shared base,
+// per client, then the state yjs converges to. The port must reach the same state
+// applying the updates in any order.
+
+function makeRng(seed) {
+  let s = seed >>> 0
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0
+    let t = Math.imul(s ^ (s >>> 15), 1 | s)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+function fuzzRandStr(rng) {
+  const n = 1 + Math.floor(rng() * 4)
+  let out = ''
+  for (let i = 0; i < n; i++) out += String.fromCharCode(97 + Math.floor(rng() * 26))
+  return out
+}
+
+function fuzzRandVal(rng) {
+  const r = rng()
+  if (r < 0.4) return Math.floor(rng() * 100)
+  if (r < 0.7) return fuzzRandStr(rng)
+  if (r < 0.85) return rng() < 0.5
+  return null
+}
+
+function fuzzApply(doc, kind, rng, count) {
+  doc.transact(() => {
+    if (kind === 'text') {
+      const t = doc.getText(KEY)
+      for (let i = 0; i < count; i++) {
+        const len = t.length
+        if (len === 0 || rng() < 0.7) t.insert(Math.floor(rng() * (len + 1)), fuzzRandStr(rng))
+        else {
+          const idx = Math.floor(rng() * len)
+          t.delete(idx, Math.min(1 + Math.floor(rng() * 2), len - idx))
+        }
+      }
+    } else if (kind === 'array') {
+      const a = doc.getArray(KEY)
+      for (let i = 0; i < count; i++) {
+        const len = a.length
+        if (len === 0 || rng() < 0.7) {
+          const vals = []
+          for (let j = 0, m = 1 + Math.floor(rng() * 2); j < m; j++) vals.push(fuzzRandVal(rng))
+          a.insert(Math.floor(rng() * (len + 1)), vals)
+        } else {
+          const idx = Math.floor(rng() * len)
+          a.delete(idx, Math.min(1 + Math.floor(rng() * 2), len - idx))
+        }
+      }
+    } else {
+      const m = doc.getMap(KEY)
+      const keys = ['a', 'b', 'c', 'd']
+      for (let i = 0; i < count; i++) {
+        const k = keys[Math.floor(rng() * keys.length)]
+        if (rng() < 0.7) m.set(k, fuzzRandVal(rng))
+        else m.delete(k)
+      }
+    }
+  })
+}
+
+function fuzzScenario(kind, seed) {
+  const rng = makeRng(seed)
+  const base = new Y.Doc()
+  base.clientID = 100
+  fuzzApply(base, kind, rng, 2 + Math.floor(rng() * 3))
+  const baseUpdate = Y.encodeStateAsUpdate(base)
+  const baseSV = Y.encodeStateVector(base)
+  const updates = [b64(baseUpdate)]
+  const numClients = 2 + Math.floor(rng() * 2)
+  for (let c = 0; c < numClients; c++) {
+    const doc = new Y.Doc()
+    doc.clientID = 1 + c
+    Y.applyUpdate(doc, baseUpdate)
+    fuzzApply(doc, kind, rng, 1 + Math.floor(rng() * 4))
+    updates.push(b64(Y.encodeStateAsUpdate(doc, baseSV)))
+  }
+  const merged = new Y.Doc()
+  for (const u of updates) Y.applyUpdate(merged, Uint8Array.from(Buffer.from(u, 'base64')))
+  const state =
+    kind === 'text'
+      ? merged.getText(KEY).toString()
+      : JSON.stringify((kind === 'array' ? merged.getArray(KEY) : merged.getMap(KEY)).toJSON())
+  return { name: `${kind}_fuzz_${seed}`, kind, updates, state }
+}
+
+const fuzz = []
+for (const kind of ['text', 'array', 'map']) {
+  for (let seed = 1; seed <= 12; seed++) fuzz.push(fuzzScenario(kind, seed * 2654435761))
+}
+
 const encode = [
   encodeFixture('empty', 'new doc, no ops', 1001, []),
   encodeFixture('ascii', 'plain ascii insert', 1001,
@@ -402,7 +499,7 @@ const semantic = [
 
 const out = {
   meta: { yjsVersion: YJS_VERSION, format: 'v1', key: KEY, generatedBy: 'fixtures/generate.mjs' },
-  encode, merge, converge, diff, incremental, sticky, semantic, array, map, xml, containerConverge,
+  encode, merge, converge, diff, incremental, sticky, semantic, array, map, xml, containerConverge, fuzz,
 }
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -412,5 +509,5 @@ writeFileSync(join(dest, 'golden_v13_6_31.json'), JSON.stringify(out, null, 2) +
 
 const count =
   encode.length + merge.length + converge.length + diff.length + incremental.length + sticky.length
-  + semantic.length + array.length + map.length + xml.length + containerConverge.length
+  + semantic.length + array.length + map.length + xml.length + containerConverge.length + fuzz.length
 console.log(`wrote ${count} fixtures (yjs ${YJS_VERSION}) -> Tests/YSwiftTests/Fixtures/golden_v13_6_31.json`)

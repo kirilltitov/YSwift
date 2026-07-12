@@ -680,6 +680,34 @@
       "xml": "<b>x</b>tail",
       "stateVector": "AekHCA==",
       "update": "AQXpBwAHAQdjb250ZW50AwFiBwDpBwAGBADpBwEBeIfpBwAGBADpBwMEdGFpbAA="
+    },
+    {
+      "name": "xml_multi_attr",
+      "description": "element with two attributes (sorted keys)",
+      "clientID": 1001,
+      "nodes": [
+        {
+          "tag": "a",
+          "attrs": [
+            [
+              "href",
+              "https://x.y"
+            ],
+            [
+              "title",
+              "link"
+            ]
+          ],
+          "children": [
+            {
+              "text": "go"
+            }
+          ]
+        }
+      ],
+      "xml": "<a href=\"https://x.y\" title=\"link\">go</a>",
+      "stateVector": "AekHBg==",
+      "update": "AQXpBwAHAQdjb250ZW50AwFhBwDpBwAGBADpBwECZ28oAOkHAARocmVmAXcLaHR0cHM6Ly94LnkoAOkHAAV0aXRsZQF3BGxpbmsA"
     }
   ],
   "containerConverge": [

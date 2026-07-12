@@ -132,9 +132,22 @@ struct NativeXml {
         switch value {
         case .string(let text): text
         case .bool(let flag): flag ? "true" : "false"
-        case .number(let number):
-            number == number.rounded(.towardZero) ? String(Int64(number)) : String(number)
-        default: ""
+        case .null: "null"
+        case .undefined: "undefined"
+        case .bigInt(let number): String(number)
+        case .number(let number): Self.numberString(number)
+        case .bytes, .array, .object: ""  // JS coercion here is rarely meaningful in an attribute
         }
+    }
+
+    /// JS `String(Number)` for the values that appear in attributes, without
+    /// crashing on non-finite or out-of-Int64-range values.
+    private static func numberString(_ number: Double) -> String {
+        if number.isNaN { return "NaN" }
+        if number.isInfinite { return number > 0 ? "Infinity" : "-Infinity" }
+        if number == number.rounded(.towardZero), abs(number) < 9_007_199_254_740_992 {
+            return String(Int64(number))
+        }
+        return String(number)
     }
 }

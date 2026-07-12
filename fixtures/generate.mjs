@@ -225,6 +225,12 @@ const xml = [
     ] }]),
   xmlFixture('xml_siblings', 'fragment with an element then a bare text node', 1001,
     [{ tag: 'b', children: [{ text: 'x' }] }, { text: 'tail' }]),
+  // Attributes listed in sorted-key order: the native builder sorts attribute keys,
+  // so this stays byte-exact. (Interop with a peer that set attributes in a
+  // different order is a semantic match only — the public API takes an unordered
+  // attribute dictionary, exactly like multi-attribute text formatting.)
+  xmlFixture('xml_multi_attr', 'element with two attributes (sorted keys)', 1001,
+    [{ tag: 'a', attrs: [['href', 'https://x.y'], ['title', 'link']], children: [{ text: 'go' }] }]),
 ]
 
 const array = [

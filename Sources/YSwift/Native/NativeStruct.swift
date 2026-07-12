@@ -465,9 +465,11 @@ final class Item: Struct {
             self.id.client == right.id.client,
             self.id.clock + self.length == right.id.clock,
             self.deleted == right.deleted,
+            self.redone == nil, right.redone == nil,  // never merge across an undo/redo re-creation
             self.content.sameKind(as: right.content),
             self.content.mergeWith(right.content)
         else { return false }
+        if right.keep { self.setKeep(true) }
         self.right = right.right
         (right.right as? Item)?.left = self
         self.length += right.length

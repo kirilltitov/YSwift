@@ -2,26 +2,41 @@
 /// `lib0` codec. This is a structural pass — it does not integrate structs into a
 /// document — used to validate the binary layout byte-for-byte (M2).
 enum UpdateCodec {
+    private static let maximumClientID = (UInt64(1) << 53) - 1
+    private static let maximumClock = UInt64(UInt32.max)
+
     static func readUpdate(_ bytes: [UInt8]) throws -> ParsedUpdate {
         var decoder = Lib0Decoder(bytes)
-        let numClients = try decoder.readVarUint()
+        let numClients = try decoder.readBoundedCount()
         var blocks: [ClientBlock] = []
-        blocks.reserveCapacity(Int(numClients))
+        blocks.reserveCapacity(numClients)
+        var seenClients: Set<UInt64> = []
         for _ in 0..<numClients {
-            let numStructs = try decoder.readVarUint()
-            let client = try decoder.readVarUint()
-            let firstClock = try decoder.readVarUint()
+            let numStructs = try decoder.readBoundedCount()
+            let client = try self.readClient(&decoder)
+            guard seenClients.insert(client).inserted else {
+                throw Lib0DecodingError.invalidValue
+            }
+            let firstClock = try self.readClock(&decoder)
             var clock = firstClock
             var structs: [StructRef] = []
-            structs.reserveCapacity(Int(numStructs))
+            structs.reserveCapacity(numStructs)
             for _ in 0..<numStructs {
                 let structRef = try self.readStruct(&decoder, client: client, clock: clock)
-                clock += structRef.length
+                guard structRef.length > 0 else {
+                    throw Lib0DecodingError.invalidValue
+                }
+                let (nextClock, overflow) = clock.addingReportingOverflow(structRef.length)
+                guard !overflow, nextClock <= self.maximumClock else {
+                    throw Lib0DecodingError.integerOverflow
+                }
+                clock = nextClock
                 structs.append(structRef)
             }
             blocks.append(ClientBlock(client: client, firstClock: firstClock, structs: structs))
         }
         let deleteSet = try self.readDeleteSet(&decoder)
+        guard !decoder.hasRemaining else { throw Lib0DecodingError.invalidValue }
         return ParsedUpdate(clientBlocks: blocks, deleteSet: deleteSet)
     }
 
@@ -44,29 +59,29 @@ enum UpdateCodec {
         let info = try decoder.readUInt8()
         let ref = info & 0x1F
         let id = YID(client: client, clock: clock)
-        switch ref {
-        case 0: return .gc(id: id, length: try decoder.readVarUint())
-        case 10: return .skip(id: id, length: try decoder.readVarUint())
-        default:
-            let origin = (info & 0x80) != 0 ? try self.readID(&decoder) : nil
-            let rightOrigin = (info & 0x40) != 0 ? try self.readID(&decoder) : nil
-            var parent: ParentRef?
-            var parentSub: String?
-            if (info & 0xC0) == 0 {
-                if try decoder.readVarUint() == 1 {
-                    parent = .rootKey(try decoder.readVarString())
-                } else {
-                    parent = .id(try self.readID(&decoder))
-                }
-                if (info & 0x20) != 0 { parentSub = try decoder.readVarString() }
+        if info == 0 { return .gc(id: id, length: try self.readClock(&decoder)) }
+        if info == 10 { return .skip(id: id, length: try self.readClock(&decoder)) }
+        guard ref != 0, ref != 10 else { throw Lib0DecodingError.invalidValue }
+        let origin = (info & 0x80) != 0 ? try self.readID(&decoder) : nil
+        let rightOrigin = (info & 0x40) != 0 ? try self.readID(&decoder) : nil
+        var parent: ParentRef?
+        var parentSub: String?
+        if (info & 0xC0) == 0 {
+            let parentInfo = try decoder.readVarUint()
+            guard parentInfo <= 1 else { throw Lib0DecodingError.invalidValue }
+            if parentInfo == 1 {
+                parent = .rootKey(try decoder.readVarString())
+            } else {
+                parent = .id(try self.readID(&decoder))
             }
-            let content = try self.readContent(&decoder, ref: ref)
-            return .item(
-                ItemRef(
-                    id: id, info: info, origin: origin, rightOrigin: rightOrigin,
-                    parent: parent, parentSub: parentSub, content: content
-                ))
+            if (info & 0x20) != 0 { parentSub = try decoder.readVarString() }
         }
+        let content = try self.readContent(&decoder, ref: ref)
+        return .item(
+            ItemRef(
+                id: id, info: info, origin: origin, rightOrigin: rightOrigin,
+                parent: parent, parentSub: parentSub, content: content
+            ))
     }
 
     private static func writeStruct(_ structRef: StructRef, into encoder: inout Lib0Encoder) {
@@ -104,25 +119,30 @@ enum UpdateCodec {
 
     private static func readContent(_ decoder: inout Lib0Decoder, ref: UInt8) throws -> ContentRef {
         switch ref {
-        case 1: return .deleted(try decoder.readVarUint())
+        case 1: return .deleted(try self.readClock(&decoder))
         case 2:
-            let count = try decoder.readVarUint()
+            let count = try decoder.readBoundedCount()
             var elements: [String] = []
-            elements.reserveCapacity(Int(count))
-            for _ in 0..<count { elements.append(try decoder.readVarString()) }
+            elements.reserveCapacity(count)
+            for _ in 0..<count {
+                elements.append(try self.readJSONFragment(&decoder, allowsUndefined: true))
+            }
             return .json(elements)
         case 3: return .binary(try decoder.readVarUint8Array())
         case 4: return .string(try decoder.readVarString())
-        case 5: return .embed(try decoder.readVarString())
-        case 6: return .format(key: try decoder.readVarString(), value: try decoder.readVarString())
+        case 5: return .embed(try self.readJSONFragment(&decoder))
+        case 6:
+            return .format(
+                key: try decoder.readVarString(), value: try self.readJSONFragment(&decoder)
+            )
         case 7:
             let typeRef = try decoder.readVarUint()
+            guard typeRef <= 6 else { throw Lib0DecodingError.invalidValue }
             let name = (typeRef == 3 || typeRef == 5) ? try decoder.readVarString() : nil
             return .type(ref: typeRef, name: name)
         case 8:
-            let count = try decoder.readVarUint()
+            let count = try decoder.readBoundedCount()
             var elements: [Lib0Any] = []
-            elements.reserveCapacity(Int(count))
             for _ in 0..<count { elements.append(try decoder.readAny()) }
             return .any(elements)
         case 9: return .doc(guid: try decoder.readVarString(), options: try decoder.readAny())
@@ -157,16 +177,27 @@ enum UpdateCodec {
     // MARK: Delete set & IDs
 
     private static func readDeleteSet(_ decoder: inout Lib0Decoder) throws -> DeleteSetData {
-        let numClients = try decoder.readVarUint()
+        let numClients = try decoder.readBoundedCount()
         var clients: [DeleteClient] = []
-        clients.reserveCapacity(Int(numClients))
+        clients.reserveCapacity(numClients)
+        var seenClients: Set<UInt64> = []
         for _ in 0..<numClients {
-            let client = try decoder.readVarUint()
-            let numRanges = try decoder.readVarUint()
+            let client = try self.readClient(&decoder)
+            guard seenClients.insert(client).inserted else {
+                throw Lib0DecodingError.invalidValue
+            }
+            let numRanges = try decoder.readBoundedCount()
             var ranges: [DeleteRange] = []
-            ranges.reserveCapacity(Int(numRanges))
+            ranges.reserveCapacity(numRanges)
             for _ in 0..<numRanges {
-                ranges.append(DeleteRange(clock: try decoder.readVarUint(), length: try decoder.readVarUint()))
+                let clock = try self.readClock(&decoder)
+                let length = try self.readClock(&decoder)
+                guard length > 0 else { throw Lib0DecodingError.invalidValue }
+                let (end, overflow) = clock.addingReportingOverflow(length)
+                guard !overflow, end <= self.maximumClock else {
+                    throw Lib0DecodingError.integerOverflow
+                }
+                ranges.append(DeleteRange(clock: clock, length: length))
             }
             clients.append(DeleteClient(client: client, ranges: ranges))
         }
@@ -186,11 +217,37 @@ enum UpdateCodec {
     }
 
     private static func readID(_ decoder: inout Lib0Decoder) throws -> YID {
-        YID(client: try decoder.readVarUint(), clock: try decoder.readVarUint())
+        YID(client: try self.readClient(&decoder), clock: try self.readClock(&decoder))
     }
 
     private static func writeID(_ id: YID, into encoder: inout Lib0Encoder) {
         encoder.writeVarUint(id.client)
         encoder.writeVarUint(id.clock)
+    }
+
+    private static func readClient(_ decoder: inout Lib0Decoder) throws -> UInt64 {
+        let client = try decoder.readVarUint()
+        guard client <= self.maximumClientID else { throw Lib0DecodingError.integerOverflow }
+        return client
+    }
+
+    private static func readClock(_ decoder: inout Lib0Decoder) throws -> UInt64 {
+        let clock = try decoder.readVarUint()
+        guard clock <= self.maximumClock else { throw Lib0DecodingError.integerOverflow }
+        return clock
+    }
+
+    private static func readJSONFragment(
+        _ decoder: inout Lib0Decoder, allowsUndefined: Bool = false
+    ) throws -> String {
+        let value = try decoder.readVarString()
+        if allowsUndefined, value == "undefined" { return value }
+        do {
+            var validator = JSONSyntaxValidator(value)
+            try validator.validate()
+        } catch {
+            throw Lib0DecodingError.invalidValue
+        }
+        return value
     }
 }

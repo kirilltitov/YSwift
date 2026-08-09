@@ -80,10 +80,14 @@ final class NativeEngine: YEngine, @unchecked Sendable {
         StateVector(data: Data(self.doc.encodeStateVector()))
     }
 
-    func applyUpdate(in txn: YTransaction, _ update: Data, origin: Origin?) {
+    func applyUpdate(in txn: YTransaction, _ update: Data, origin: Origin?) throws {
         // origin rides on the enclosing transaction (set at beginTransaction), as in
         // yjs; the update integrates into the currently-open transaction.
-        try? self.doc.applyUpdate(Array(update))
+        do {
+            try self.doc.applyUpdate(Array(update))
+        } catch {
+            throw YError.invalidUpdate
+        }
     }
 
     // MARK: Sticky index

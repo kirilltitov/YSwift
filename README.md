@@ -26,6 +26,24 @@ Verification: golden vectors + concurrent convergence + a recorded randomised
 differential fuzz (text/array/map) + adversarial code review, all green on both
 engines. The default runtime path uses no Rust.
 
+Untrusted v1 ingress uses `YUpdate.validateV1` plus
+`YDoc.applyUpdateChecked`: declared sizes, varints, UTF-8, JSON fragments,
+control bytes, clocks and complete buffer consumption are validated before
+either backend is entered, and native
+decode failures / yrs decode-or-apply failures surface as `YError.invalidUpdate`.
+The legacy `applyUpdate` wrapper remains nonthrowing for source compatibility.
+Because yrs can discover a semantic error after a valid prefix, a document on
+which checked apply throws must be discarded.
+
+The checked v1 profile caps clocks and lengths at the shared native/yrs limit
+(`UInt32.max`). Dynamic `Any` objects with duplicate keys or `__proto__` are
+rejected recursively: JavaScript, Swift and Rust otherwise materialise those
+wire values differently. JSON syntax follows `JSON.parse`, including escaped
+unpaired UTF-16 surrogates. NativeEngine preserves those escapes byte-for-byte;
+the optional YrsEngine rejects them because Rust strings cannot represent an
+unpaired surrogate. Transaction origin is set by `transact(origin:_:)`, not the
+source-compatible `origin` argument on `applyUpdate`.
+
 ## Two-phase plan
 
 The public API (in `Sources/YSwift`) is **frozen** and does not change between

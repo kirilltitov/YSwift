@@ -37,7 +37,7 @@ protocol YEngine: AnyObject, Sendable {
 
     func encodeStateAsUpdate(in txn: YTransaction, since sv: StateVector?) -> Data
     func encodeStateVector(in txn: YTransaction) -> StateVector
-    func applyUpdate(in txn: YTransaction, _ update: Data, origin: Origin?)
+    func applyUpdate(in txn: YTransaction, _ update: Data, origin: Origin?) throws
 
     func stickyFromIndex(in txn: YTransaction, _ handle: TextHandle, index: Int, assoc: StickyIndex.Assoc) -> Data?
     func stickyToIndex(in txn: YTransaction, _ raw: Data) -> Int?

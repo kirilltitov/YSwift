@@ -6,6 +6,7 @@
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use cyrs::{ydoc_destroy, ydoc_new, ytxn, ytxn_apply_update_v1, ytxn_commit};
 use serde_json::Value;
 use std::sync::Arc;
 use yrs::types::Attrs;
@@ -14,7 +15,6 @@ use yrs::{
     Any, ClientID, Doc, GetString, OffsetKind, Options, ReadTxn, StateVector, Text, TextRef,
     Transact, TransactionMut,
 };
-
 const KEY: &str = "content";
 
 fn to_attrs(v: &Value) -> Attrs {
@@ -110,4 +110,36 @@ fn yrs_reproduces_yjs_encode_vectors() {
     }
 
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+#[test]
+fn c_apply_requires_one_complete_v1_update() {
+    unsafe {
+        let doc = ydoc_new(42, false);
+        let txn = ytxn(doc);
+
+        let canonical_empty = [0_u8, 0_u8];
+        assert!(ytxn_apply_update_v1(
+            txn,
+            canonical_empty.as_ptr(),
+            canonical_empty.len()
+        ));
+
+        let trailing = [0_u8, 0_u8, 0xff_u8];
+        assert!(!ytxn_apply_update_v1(
+            txn,
+            trailing.as_ptr(),
+            trailing.len()
+        ));
+
+        let truncated = [0_u8];
+        assert!(!ytxn_apply_update_v1(
+            txn,
+            truncated.as_ptr(),
+            truncated.len()
+        ));
+
+        ytxn_commit(txn);
+        ydoc_destroy(doc);
+    }
 }

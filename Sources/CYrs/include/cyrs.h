@@ -41,6 +41,7 @@ CYrsSubscription *ytext_observe(CYrsDoc *doc, const uint8_t *name, size_t name_l
 /* --- Encoding & sync (v1) --- */
 uint8_t *ytxn_state_as_update_v1(CYrsTxn *txn, const uint8_t *sv, size_t sv_len, size_t *out_len);
 uint8_t *ytxn_state_vector_v1(CYrsTxn *txn, size_t *out_len);
+/* False may follow partial prefix integration; discard the document after false. */
 bool ytxn_apply_update_v1(CYrsTxn *txn, const uint8_t *update, size_t len);
 
 /* --- Doc-less update ops (merge / diff) --- */

@@ -255,10 +255,13 @@ final class YrsEngine: YEngine, @unchecked Sendable {
         return StateVector(data: self.consumeBytes(ptr, outLen))
     }
 
-    func applyUpdate(in txn: YTransaction, _ update: Data, origin: Origin?) {
-        guard let t = self.txnPtr(txn) else { return }
+    func applyUpdate(in txn: YTransaction, _ update: Data, origin: Origin?) throws {
+        guard let t = self.txnPtr(txn) else { throw YError.transactionEscaped }
         let bytes = Array(update)
-        _ = bytes.withUnsafeBufferPointer { ytxn_apply_update_v1(t, $0.baseAddress, $0.count) }
+        let applied = bytes.withUnsafeBufferPointer {
+            ytxn_apply_update_v1(t, $0.baseAddress, $0.count)
+        }
+        guard applied else { throw YError.invalidUpdate }
     }
 
     // MARK: Sticky index

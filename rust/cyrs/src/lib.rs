@@ -20,13 +20,13 @@
 use serde_json::Value;
 use std::ffi::c_void;
 use std::sync::Arc;
+use yrs::sync::{Awareness, AwarenessUpdate};
 use yrs::types::text::YChange;
 use yrs::types::Attrs;
-use yrs::sync::{Awareness, AwarenessUpdate};
-use yrs::undo::{Options as UndoOptions, UndoManager};
-use yrs::updates::decoder::Decode;
-use yrs::updates::encoder::Encode;
 use yrs::types::Delta;
+use yrs::undo::{Options as UndoOptions, UndoManager};
+use yrs::updates::decoder::{Decode, Decoder, DecoderV1};
+use yrs::updates::encoder::Encode;
 use yrs::{
     diff_updates_v1, merge_updates_v1, Any, Assoc, ClientID, Doc, GetString, IndexedSequence,
     Observable, OffsetKind, Options, Origin, Out, ReadTxn, StateVector, StickyIndex, Subscription,
@@ -329,16 +329,22 @@ pub unsafe extern "C" fn ytxn_state_vector_v1(
 }
 
 /// Applies a v1 update. Returns `false` if the bytes could not be decoded/applied.
+/// An apply error may occur after a valid prefix was integrated; callers must
+/// discard the document after `false` rather than continue using its state.
 #[no_mangle]
 pub unsafe extern "C" fn ytxn_apply_update_v1(
     txn: *mut TransactionMut<'static>,
     update: *const u8,
     len: usize,
 ) -> bool {
-    match Update::decode_v1(as_slice(update, len)) {
-        Ok(u) => (*txn).apply_update(u).is_ok(),
-        Err(_) => false,
-    }
+    let mut decoder = DecoderV1::from(as_slice(update, len));
+    let Ok(decoded) = Update::decode(&mut decoder) else {
+        return false;
+    };
+    let Ok(trailing) = decoder.read_to_end() else {
+        return false;
+    };
+    trailing.is_empty() && (*txn).apply_update(decoded).is_ok()
 }
 
 // ---- Update observers & transaction origin ----------------------------------

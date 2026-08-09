@@ -11,6 +11,17 @@ import Foundation
 /// input(s) and re-encodes. For complete updates this is byte-identical to yjs
 /// `mergeUpdates` / `diffUpdate` (see the native encode round-trip tests).
 public enum YUpdate {
+    /// Validates one complete Yjs v1 update without integrating it into a document.
+    /// Rejects malformed/trailing data, non-canonical integers and unsafe declared
+    /// sizes before a backend decoder or document is touched.
+    public static func validateV1(_ update: Data) throws {
+        do {
+            _ = try UpdateCodec.readUpdate(Array(update))
+        } catch {
+            throw YError.invalidUpdate
+        }
+    }
+
     /// Merges several updates into one, de-duplicating shared structure.
     public static func merge(_ updates: [Data]) -> Data {
         guard !updates.isEmpty else { return Data() }

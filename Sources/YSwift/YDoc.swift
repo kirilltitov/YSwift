@@ -124,9 +124,37 @@ extension YDoc {
         self.engine.encodeStateVector(in: txn)
     }
 
-    /// Applies a remote update. `origin` marks the source (e.g. remote) so
-    /// `onUpdate` listeners can skip echoing it back.
+    /// Applies a remote update while preserving the legacy nonthrowing contract.
+    /// Structurally malformed data is ignored before integration, but a backend
+    /// semantic failure may leave a valid prefix integrated while its error is
+    /// swallowed. Use only for trusted input; new network boundaries must use
+    /// `applyUpdateChecked(_:_:origin:)` with a disposable document.
+    ///
+    /// The `origin` argument is retained for source compatibility. Origin is fixed
+    /// when the enclosing transaction begins, so pass it to `transact(origin:_:)`.
     public func applyUpdate(_ txn: YTransaction, _ update: Data, origin: Origin? = nil) {
-        self.engine.applyUpdate(in: txn, update, origin: origin)
+        try? self.applyUpdateChecked(txn, update, origin: origin)
+    }
+
+    /// Strictly validates and applies a remote v1 update.
+    ///
+    /// Both malformed wire data and backend integration errors are reported as
+    /// `YError.invalidUpdate`. The `origin` argument is retained for source
+    /// compatibility but the enclosing transaction owns origin; use
+    /// `transact(origin:_:)` to mark the source for `onUpdate` listeners.
+    ///
+    /// A backend may discover a semantic integration error after integrating an
+    /// earlier valid prefix. Callers handling untrusted input must therefore apply
+    /// it to a disposable document and discard that document whenever this method
+    /// throws.
+    public func applyUpdateChecked(
+        _ txn: YTransaction, _ update: Data, origin: Origin? = nil
+    ) throws {
+        do {
+            try YUpdate.validateV1(update)
+            try self.engine.applyUpdate(in: txn, update, origin: origin)
+        } catch {
+            throw YError.invalidUpdate
+        }
     }
 }

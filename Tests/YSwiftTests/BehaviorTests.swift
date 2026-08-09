@@ -97,6 +97,33 @@ struct EngineBehaviorTests {
         #expect(deltas.last == [.delete(1)])
     }
 
+    @Test("text insert distinguishes omitted from explicitly empty attributes")
+    func textInsertAttributeInheritance() {
+        let doc = YDoc(clientID: 1)
+        let inherited = doc.text("inherited")
+        let cleared = doc.text("cleared")
+
+        doc.transact { txn in
+            inherited.insert(txn, at: 0, "A", attributes: ["bold": true])
+            inherited.insert(txn, at: 1, "B")
+
+            cleared.insert(txn, at: 0, "A", attributes: ["bold": true])
+            cleared.insert(txn, at: 1, "B", attributes: [:])
+        }
+
+        #expect(
+            doc.transact { inherited.toDelta($0) }
+                == [.insert(.string("AB"), attributes: ["bold": true])]
+        )
+        #expect(
+            doc.transact { cleared.toDelta($0) }
+                == [
+                    .insert(.string("A"), attributes: ["bold": true]),
+                    .insert(.string("B"), attributes: nil),
+                ]
+        )
+    }
+
     @Test("Awareness.encodeUpdate(clients:) restricts the update to the given clients")
     func awarenessEncodeSubset() {
         let docA = YDoc(clientID: 1)

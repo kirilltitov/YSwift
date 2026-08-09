@@ -174,7 +174,7 @@ final class YrsEngine: YEngine, @unchecked Sendable {
         let name = Array(handle.name.utf8)
         let str = Array(string.utf8)
         name.withUnsafeBufferPointer { n in
-            if let attributes, !attributes.isEmpty {
+            if let attributes {
                 let json = self.attributesJSON(attributes)
                 str.withUnsafeBufferPointer { s in
                     json.withUnsafeBufferPointer { a in

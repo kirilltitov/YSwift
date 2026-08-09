@@ -10,7 +10,7 @@ import Foundation
 /// Wire-compatible with `y-protocols/awareness`. Never persisted and never
 /// routed through the commit journal (requirements §9.7).
 ///
-/// Not `Sendable`: awareness state is mutated in place and its yrs operations
+/// Not `Sendable`: awareness state is mutated in place and backend operations
 /// require exclusive access. Drive it from a single context (or wrap in an actor
 /// per room).
 public final class Awareness {

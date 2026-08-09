@@ -1,5 +1,5 @@
-//! `cyrs` — a thin C ABI over the Rust `yrs` CRDT, backing YSwift's Phase-1
-//! engine (`YrsEngine`).
+//! `cyrs` — a thin C ABI over the Rust `yrs` CRDT, backing YSwift's optional
+//! differential-oracle engine (`YrsEngine`).
 //!
 //! Design notes:
 //! - Documents use `OffsetKind::Utf16` so item lengths match Yjs's UTF-16
@@ -13,7 +13,13 @@
 //!   guarantees a transaction never outlives its document and that at most one
 //!   write transaction is live per document (serialized by a `Mutex`).
 //! - Byte buffers returned to the caller must be freed with `ybytes_free`.
-//! - Formatting attributes cross the boundary as a JSON object (UTF-8).
+//! - Formatting attributes cross the boundary as a JSON object (UTF-8). Calling
+//!   `ytext_insert` inherits active formatting; calling `ytext_insert_attrs`
+//!   with even an empty object explicitly clears it for the inserted run.
+//! - YSwift's checked path performs structural validation before calling apply.
+//!   The C apply function still enforces complete consumption, but yrs may report a
+//!   semantic error after integrating a valid prefix; a false result poisons the
+//!   document for caller purposes.
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -328,9 +334,11 @@ pub unsafe extern "C" fn ytxn_state_vector_v1(
     bytes_out((*txn).state_vector().encode_v1(), out_len)
 }
 
-/// Applies a v1 update. Returns `false` if the bytes could not be decoded/applied.
-/// An apply error may occur after a valid prefix was integrated; callers must
-/// discard the document after `false` rather than continue using its state.
+/// Applies exactly one complete v1 update. Returns `false` on decode failure,
+/// trailing bytes, or apply failure. An apply error may occur after a valid prefix
+/// was integrated; callers must discard the document after `false` rather than
+/// continue using its state. Backend materialisation can also reject a value that
+/// passed Swift structural validation, such as an escaped unpaired UTF-16 surrogate.
 #[no_mangle]
 pub unsafe extern "C" fn ytxn_apply_update_v1(
     txn: *mut TransactionMut<'static>,

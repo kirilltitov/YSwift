@@ -1,7 +1,9 @@
 /// Identifies the source of a transaction.
 ///
 /// Used to distinguish local from remote changes (echo-loop prevention,
-/// requirements §9.3) and to scope `UndoManager` via tracked origins.
+/// requirements §9.3) and to scope `UndoManager` via tracked origins. Set it
+/// when opening `YDoc.transact(origin:_:)`; an update method cannot retag an
+/// already-open transaction.
 public struct Origin: Sendable, Hashable {
     public let rawValue: String
 

@@ -1,6 +1,8 @@
 /// Reads and writes the Yjs v1 update wire format (structs + delete set) over the
-/// `lib0` codec. This is a structural pass — it does not integrate structs into a
-/// document — used to validate the binary layout byte-for-byte (M2).
+/// `lib0` codec. This is a structural pass: it verifies one complete, bounded
+/// update with canonical scalar encodings but does not resolve causal references
+/// or integrate structs into a document. `YUpdate.validateV1` exposes that
+/// distinction at the public boundary.
 enum UpdateCodec {
     private static let maximumClientID = (UInt64(1) << 53) - 1
     private static let maximumClock = UInt64(UInt32.max)

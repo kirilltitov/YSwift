@@ -4,17 +4,13 @@ import FoundationEssentials
 import Foundation
 #endif
 
-/// Phase-2 engine: the pure-Swift YATA + `lib0` implementation behind the frozen
-/// `YEngine`. Wraps a `NativeDoc`; must produce byte-identical wire output to
-/// `YrsEngine`.
+/// Default engine: the pure-Swift YATA + `lib0` implementation behind `YEngine`.
+/// Wraps a `NativeDoc` and is differentially checked against Yjs/`YrsEngine`.
 ///
 /// `@unchecked Sendable` under the same invariant as `YrsEngine`: the owning
 /// `YDoc`'s `Mutex` serialises every call, so the mutable `NativeDoc` is never
 /// touched concurrently.
 ///
-/// Not yet implemented natively (return neutral values; exercised only by the
-/// public-API suites that still run on `YrsEngine`): undo manager, awareness,
-/// text observers.
 final class NativeEngine: YEngine, @unchecked Sendable {
     let doc: NativeDoc
     var clientID: UInt64 { self.doc.clientID }
@@ -81,8 +77,8 @@ final class NativeEngine: YEngine, @unchecked Sendable {
     }
 
     func applyUpdate(in txn: YTransaction, _ update: Data, origin: Origin?) throws {
-        // origin rides on the enclosing transaction (set at beginTransaction), as in
-        // yjs; the update integrates into the currently-open transaction.
+        // Origin belongs to the enclosing transaction (set at beginTransaction),
+        // as in yjs; this source-compatible method argument cannot retag it.
         do {
             try self.doc.applyUpdate(Array(update))
         } catch {
@@ -116,7 +112,7 @@ final class NativeEngine: YEngine, @unchecked Sendable {
         return YSubscription { [weak self] in self?.doc.removeTextObserver(name, id) }
     }
 
-    // MARK: Not yet implemented natively
+    // MARK: Undo manager & awareness
 
     func makeUndoManager(_ handle: TextHandle, trackedOrigins: Set<Origin>, captureTimeoutMillis: UInt64) -> AnyObject?
     {

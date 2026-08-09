@@ -4,11 +4,12 @@ A Swift port of the necessary subset of [Yjs](https://github.com/yjs/yjs) for
 **server-side Swift**, with **binary wire-compatibility with JS-Yjs** as the
 number-one correctness requirement.
 
-The required public API (requirements §4) is a single collaborative **text** type
-per document, plus synchronization/encoding, sticky positions, awareness and
-undo/redo. Container types (`Y.Map`/`Y.Array`/`Y.Xml*`) were originally out of
-scope (§8) but have since been added as a **native-engine extension** — see
-[`DECISIONS.md`](DECISIONS.md). Subdocuments remain out of scope.
+The original required public API (requirements §4) is a single collaborative
+**text** type per document, plus synchronization/encoding, sticky positions,
+awareness and undo/redo. Container types (`Y.Map`/`Y.Array`/`Y.Xml*`) were
+originally out of scope (§8) but have since been added as a **native-engine
+extension** — see [`DECISIONS.md`](DECISIONS.md). Subdocuments remain out of
+scope.
 
 ## Status
 
@@ -16,60 +17,92 @@ The pure-Swift `NativeEngine` is the **default** backend; the Rust `YrsEngine`
 stays as a differential oracle (`YSWIFT_ENGINE=yrs`). Implemented and verified
 **byte-for-byte against JS-Yjs v13.6.31** on macOS + Linux:
 
-- **Text** — insert/delete/format, `toDelta`, sync/encoding (`applyUpdate`,
-  `encodeStateAsUpdate` full + diff, `encodeStateVector`), `YUpdate.merge/diff`,
-  out-of-order pending buffer, sticky index, awareness, undo/redo, observers.
+- **Text** — insert/delete/format, `toDelta`, sync/encoding
+  (`applyUpdateChecked`, legacy `applyUpdate`, `encodeStateAsUpdate` full + diff,
+  `encodeStateVector`), `YUpdate.merge/diff`, out-of-order pending buffer,
+  sticky index, awareness, undo/redo, observers.
 - **Containers** — `Y.Array`, `Y.Map`, `Y.Xml` (fragment/element/text): build,
-  materialise, and byte-exact wire output.
+  materialise, and byte-exact wire output on the native engine.
 
 Verification: golden vectors + concurrent convergence + a recorded randomised
-differential fuzz (text/array/map) + adversarial code review, all green on both
-engines. The default runtime path uses no Rust.
+differential fuzz (text/array/map) + adversarial code review. The shared public
+surface is gated with both engine selections; native-only containers are gated
+directly against Yjs fixtures and convergence scenarios. The default runtime
+path uses no Rust.
 
-Untrusted v1 ingress uses `YUpdate.validateV1` plus
-`YDoc.applyUpdateChecked`: declared sizes, varints, UTF-8, JSON fragments,
-control bytes, clocks and complete buffer consumption are validated before
-either backend is entered, and native
-decode failures / yrs decode-or-apply failures surface as `YError.invalidUpdate`.
-The legacy `applyUpdate` wrapper remains nonthrowing for source compatibility.
-Because yrs can discover a semantic error after a valid prefix, a document on
-which checked apply throws must be discarded.
+### Safe v1 update ingress
+
+Use `YDoc.applyUpdateChecked` at every external update boundary. It calls
+`YUpdate.validateV1` before entering the selected backend, then maps both
+structural and backend failures to `YError.invalidUpdate`:
+
+```swift
+do {
+    try candidate.transact(origin: "remote") { txn in
+        try candidate.applyUpdateChecked(txn, update)
+    }
+} catch {
+    candidate.destroy()
+    throw error
+}
+```
+
+Here `candidate` must be a disposable document (normally seeded from the last
+trusted state), promoted only after the operation succeeds. Validation and
+application are deliberately separate guarantees:
+
+- `YUpdate.validateV1` is a document-less structural preflight. It accepts
+  exactly one complete v1 update and rejects trailing bytes, non-canonical or
+  overflowing integers, invalid UTF-8/JSON, unsafe declared sizes, invalid
+  control values, duplicate dynamic-object keys and `__proto__`.
+- Structural success does **not** prove that references are causally usable by a
+  particular document or that every backend can materialise every legal value.
+- Backend application is not rollback-atomic. In particular, yrs may discover
+  a semantic error after integrating a valid prefix. If checked application
+  throws, discard the candidate document; do not inspect, persist, or reuse it.
+
+The legacy `applyUpdate` wrapper runs the same checks but intentionally swallows
+the error to preserve its original nonthrowing signature. It cannot tell the
+caller whether application succeeded and retains the same late-error
+partial-prefix risk. Keep it only for source compatibility; new ingress code
+must use the checked API and the disposable-document pattern above.
 
 The checked v1 profile caps clocks and lengths at the shared native/yrs limit
 (`UInt32.max`). Dynamic `Any` objects with duplicate keys or `__proto__` are
 rejected recursively: JavaScript, Swift and Rust otherwise materialise those
 wire values differently. JSON syntax follows `JSON.parse`, including escaped
-unpaired UTF-16 surrogates. NativeEngine preserves those escapes byte-for-byte;
-the optional YrsEngine rejects them because Rust strings cannot represent an
-unpaired surrogate. Transaction origin is set by `transact(origin:_:)`, not the
-source-compatible `origin` argument on `applyUpdate`.
+unpaired UTF-16 surrogates. `NativeEngine` preserves those escapes byte-for-byte;
+the optional `YrsEngine` rejects them because Rust strings cannot represent an
+unpaired surrogate. This is a backend materialisation difference, not a
+structural-validation failure.
 
-## Two-phase plan
+Transaction origin is fixed when `transact(origin:_:)` opens the transaction and
+is forwarded to update observers. The source-compatible `origin` arguments on
+`applyUpdate` and `applyUpdateChecked` do not retag an already-open transaction.
 
-The public API (in `Sources/YSwift`) is **frozen** and does not change between
-phases. Only the internal engine behind it changes.
+Text insertion also distinguishes an omitted attributes argument from an
+explicitly empty dictionary. `attributes: nil` inherits the active formatting at
+the insertion point, while `attributes: [:]` inserts unformatted text and then
+restores the surrounding format. Both engines implement this Yjs distinction.
 
-- **Phase 1 — facade over [Yrs](https://github.com/y-crdt/y-crdt) (Rust).**
-  `YrsEngine` wraps `yrs` through its `yffi` C ABI. Yrs is already wire-compatible
-  with Yjs, so Phase 1 inherits compatibility.
-- **Phase 2 — native Swift.** A pure-Swift YATA + `lib0` implementation
-  (`NativeEngine`) behind the same public API and producing the same bytes.
+## Engines
 
-A single cross-implementation conformance suite (golden vectors from JS-Yjs)
-gates both phases: Phase 2 is done when it passes exactly what Phase 1 passes.
+The original two-phase migration is complete. The public API is shared by two
+selectable engines:
 
-## Current status
+- **`NativeEngine` (default)** — the completed pure-Swift YATA + `lib0`
+  implementation. It also implements the native-only array, map, and XML
+  extensions.
+- **`YrsEngine` (oracle)** — the original facade over
+  [yrs](https://github.com/y-crdt/y-crdt) through the in-repo `cyrs` C ABI. Set
+  `YSWIFT_ENGINE=yrs` before constructing a document to select it for
+  differential verification. Container extensions are not wired through this
+  FFI backend.
 
-**Phase 1 complete** for the required subset. `YrsEngine` — a facade over Rust
-`yrs` via the in-repo `cyrs` C ABI — backs the full §4 API: document + text
-CRUD, `applyUpdate` / `encodeStateAsUpdate` / `encodeStateVector`, `onUpdate`
-with transaction origins, `toDelta`, `YUpdate.merge` / `diff`, `StickyIndex`,
-`Awareness`, `UndoManager`, and `text.observe`. A 25-test conformance suite
-verifies byte-for-byte compatibility with **yjs v13.6.31** (updates, state
-vectors, incremental updates, relative positions) plus structural `toDelta` and
-behavioral undo/awareness/observe checks.
-
-Phase 2 (a pure-Swift engine behind the same frozen API) is future work.
+Golden-vector and public-behavior suites verify text updates, state vectors,
+incremental updates, relative positions, deltas, origin propagation, undo,
+awareness, observers, checked ingress, and engine parity against **Yjs
+v13.6.31**.
 
 ## Build
 
@@ -78,7 +111,8 @@ The Swift package links a Rust static library (`rust/cyrs`, a C-ABI facade over
 
 ```sh
 make build      # cargo build --release (cyrs) + swift build
-make test       # + swift test (full conformance suite)
+make test       # + swift test (NativeEngine default)
+YSWIFT_ENGINE=yrs make test  # repeat the public suite through YrsEngine
 make rust-test  # cross-check yrs against the golden vectors
 make fixtures   # regenerate golden vectors from pinned JS-Yjs
 ```

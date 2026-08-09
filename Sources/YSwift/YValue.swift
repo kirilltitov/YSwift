@@ -9,7 +9,7 @@ import Foundation
 ///
 /// `Sendable` (unlike `Any`) so it crosses isolation boundaries safely under the
 /// concurrency model. A typed model is also required to reproduce `lib0`'s
-/// byte-exact `any` encoding in Phase 2.
+/// byte-exact `any` encoding in the native engine.
 public enum YValue: Sendable, Hashable {
     case null
     /// JS `undefined` — distinct from `null` (`lib0` encodes them differently).

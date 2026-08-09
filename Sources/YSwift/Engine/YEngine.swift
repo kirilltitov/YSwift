@@ -4,21 +4,19 @@ import FoundationEssentials
 import Foundation
 #endif
 
-/// Opaque, engine-specific handle to a top-level text type, obtained once per
-/// name. Phase 1 will additionally carry the underlying Yrs `Branch` pointer.
+/// Engine-independent handle to a top-level text type, obtained once per name.
 public struct TextHandle: Sendable, Hashable {
     let name: String
 }
 
-/// The internal seam between the frozen public API and a concrete backend.
+/// The internal seam between the stable public API and a concrete backend.
 ///
-/// - Phase 1: `YrsEngine` — a facade over the Rust `yrs` library via the `yffi`
+/// - `NativeEngine` — the default pure-Swift YATA + `lib0` implementation.
+/// - `YrsEngine` — the optional Rust `yrs` differential oracle via the `cyrs`
 ///   C ABI.
-/// - Phase 2: `NativeEngine` — a pure-Swift YATA + `lib0` implementation.
 ///
-/// Both **must** produce byte-identical wire output; the public API never
-/// changes between them. This protocol is internal and may evolve as long as
-/// the public surface stays frozen.
+/// Both must preserve the shared public contract and compatible wire output.
+/// This protocol is internal and may evolve without exposing engine details.
 protocol YEngine: AnyObject, Sendable {
     var clientID: UInt64 { get }
 

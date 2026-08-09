@@ -6,10 +6,10 @@ import FoundationEssentials
 import Foundation
 #endif
 
-/// A collaborative document: the root container for the CRDT text state.
+/// A collaborative document: the root container for CRDT shared state.
 ///
-/// Backend-agnostic — behind it sits a `YEngine` (Phase 1: Yrs facade,
-/// Phase 2: native Swift). The public surface never changes between phases.
+/// Backend-agnostic: `NativeEngine` is the default, while the optional
+/// `YrsEngine` remains available as a differential oracle.
 public final class YDoc: Sendable {
     /// This client's unique id (Yjs 53-bit client id).
     public let clientID: UInt64
@@ -125,28 +125,35 @@ extension YDoc {
     }
 
     /// Applies a remote update while preserving the legacy nonthrowing contract.
-    /// Structurally malformed data is ignored before integration, but a backend
-    /// semantic failure may leave a valid prefix integrated while its error is
-    /// swallowed. Use only for trusted input; new network boundaries must use
-    /// `applyUpdateChecked(_:_:origin:)` with a disposable document.
     ///
-    /// The `origin` argument is retained for source compatibility. Origin is fixed
-    /// when the enclosing transaction begins, so pass it to `transact(origin:_:)`.
+    /// Structural validation runs before backend integration, but every failure
+    /// is swallowed. A late backend error may therefore leave a valid prefix
+    /// integrated without telling the caller. Retain this API only for source
+    /// compatibility; external input must use `applyUpdateChecked(_:_:origin:)`
+    /// with a disposable document.
+    ///
+    /// The `origin` argument is retained for source compatibility and does not
+    /// retag the open transaction. Pass origin to `transact(origin:_:)` instead.
     public func applyUpdate(_ txn: YTransaction, _ update: Data, origin: Origin? = nil) {
         try? self.applyUpdateChecked(txn, update, origin: origin)
     }
 
     /// Strictly validates and applies a remote v1 update.
     ///
-    /// Both malformed wire data and backend integration errors are reported as
-    /// `YError.invalidUpdate`. The `origin` argument is retained for source
-    /// compatibility but the enclosing transaction owns origin; use
-    /// `transact(origin:_:)` to mark the source for `onUpdate` listeners.
+    /// `YUpdate.validateV1` first verifies one complete, bounded v1 wire value
+    /// without touching the backend. Structural failures and later backend
+    /// integration errors are both reported as `YError.invalidUpdate`.
+    /// Structural success alone does not prove causal integrability or
+    /// backend-specific materialisability.
     ///
-    /// A backend may discover a semantic integration error after integrating an
-    /// earlier valid prefix. Callers handling untrusted input must therefore apply
-    /// it to a disposable document and discard that document whenever this method
-    /// throws.
+    /// The `origin` argument is retained for source compatibility and does not
+    /// retag the open transaction. Use `transact(origin:_:)` to mark the source
+    /// for `onUpdate` listeners.
+    ///
+    /// Application is not rollback-atomic: a backend may discover a semantic
+    /// integration error after integrating an earlier valid prefix. Callers must
+    /// therefore apply untrusted input to a disposable document and discard that
+    /// document whenever this method throws.
     public func applyUpdateChecked(
         _ txn: YTransaction, _ update: Data, origin: Origin? = nil
     ) throws {

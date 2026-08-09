@@ -7,8 +7,8 @@ import FoundationEssentials
 import Foundation
 #endif
 
-/// Builds the engine backing a new `YDoc`. Phase 2 default: the pure-Swift
-/// `NativeEngine`. Set `YSWIFT_ENGINE=yrs` to use the Rust `YrsEngine` instead
+/// Builds the engine backing a new `YDoc`. The pure-Swift `NativeEngine` is the
+/// default. Set `YSWIFT_ENGINE=yrs` to use the Rust `YrsEngine` instead
 /// (kept as a differential oracle).
 func makeDefaultEngine(clientID: UInt64?, gc: Bool) -> any YEngine {
     if ProcessInfo.processInfo.environment["YSWIFT_ENGINE"] == "yrs" {
@@ -114,7 +114,8 @@ private func textObserverTrampoline(_ userData: UnsafeMutableRawPointer?, _ ptr:
     box.callback(YTextEvent(delta: .decodeDelta(from: data)))
 }
 
-/// Phase-1 engine: a facade over the Rust `yrs` CRDT via the `cyrs` C ABI.
+/// Optional differential-oracle engine: a facade over the Rust `yrs` CRDT via
+/// the `cyrs` C ABI.
 ///
 /// `@unchecked Sendable` invariant: the raw `yrs` document is only ever touched
 /// while the owning `YDoc`'s `Mutex` is held (all transaction-scoped calls and
@@ -256,6 +257,8 @@ final class YrsEngine: YEngine, @unchecked Sendable {
     }
 
     func applyUpdate(in txn: YTransaction, _ update: Data, origin: Origin?) throws {
+        // Origin was fixed when this transaction was opened. The argument remains
+        // only to satisfy the source-compatible engine seam.
         guard let t = self.txnPtr(txn) else { throw YError.transactionEscaped }
         let bytes = Array(update)
         let applied = bytes.withUnsafeBufferPointer {

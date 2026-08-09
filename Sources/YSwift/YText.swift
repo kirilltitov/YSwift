@@ -13,6 +13,10 @@ public final class YText: Sendable {
     }
 
     /// Inserts `string` at `index`, optionally with formatting `attributes`.
+    ///
+    /// `nil` inherits the active formatting at the insertion point. Supplying a
+    /// dictionary opts into explicit attributes; in particular, `[:]` inserts
+    /// unformatted text instead of inheriting surrounding formatting.
     public func insert(_ txn: YTransaction, at index: Int, _ string: String, attributes: Attributes? = nil) {
         self.doc.engine.textInsert(in: txn, self.handle, at: index, string, attributes: attributes)
     }

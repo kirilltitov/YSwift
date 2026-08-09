@@ -10,8 +10,6 @@ import Foundation
 #endif
 
 /// Verifies the frozen public API compiles and its value-type layer behaves.
-/// Engine-backed operations trap in the scaffold and are covered once `YrsEngine`
-/// lands in Phase 1.
 @Suite("Public API contract")
 struct PublicAPIContractTests {
 

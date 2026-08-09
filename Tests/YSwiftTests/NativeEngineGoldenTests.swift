@@ -4,11 +4,8 @@ import Testing
 
 @testable import YSwift
 
-// The golden vectors, driven through the FROZEN PUBLIC API but on a
-// NativeEngine-backed YDoc (instead of the default YrsEngine). This is the
-// drop-in acceptance proof for the pure-Swift engine's encode/decode/onUpdate/
-// sticky/toDelta surface. Undo/awareness/observeText are not yet native and are
-// left to the YrsEngine suites.
+// Direct NativeEngine coverage of the frozen public API's
+// encode/decode/onUpdate/sticky/toDelta surface against the Yjs golden corpus.
 @Suite("Golden vectors on NativeEngine")
 struct NativeEngineGoldenTests {
     private func doc(clientID: UInt64) -> YDoc {

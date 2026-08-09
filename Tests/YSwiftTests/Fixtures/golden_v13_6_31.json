@@ -347,7 +347,7 @@
   "semantic": [
     {
       "name": "multi_attr_format",
-      "description": "multi-attribute format: yrs writes the independent per-attribute structs in HashMap order, differing from yjs insertion order — semantically identical (converges) but not byte-identical",
+      "description": "multi-attribute format: Swift dictionaries do not preserve caller insertion order, so YSwift emits deterministic sorted-key order — semantically identical (converges) but not always byte-identical to yjs",
       "clientID": 1001,
       "ops": [
         {

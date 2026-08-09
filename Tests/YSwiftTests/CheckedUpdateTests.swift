@@ -3,28 +3,15 @@ import Testing
 
 @testable import YSwift
 
-enum CheckedUpdateBackend: String, CaseIterable, Sendable {
-    case native
-    case yrs
-
-    func doc(clientID: UInt64) -> YDoc {
-        switch self {
-        case .native:
-            YDoc(engine: NativeEngine(clientID: clientID, gc: true))
-        case .yrs:
-            YDoc(engine: YrsEngine(clientID: clientID, gc: true))
-        }
-    }
-}
-
 @Suite("checked v1 update ingress")
 struct CheckedUpdateTests {
-    @Test(
-        "canonical empty, generated and duplicate updates are accepted",
-        arguments: CheckedUpdateBackend.allCases
-    )
-    func acceptsValidUpdates(backend: CheckedUpdateBackend) throws {
-        let source = backend.doc(clientID: 11)
+    private func doc(clientID: UInt64) -> YDoc {
+        YDoc(clientID: clientID)
+    }
+
+    @Test("canonical empty, generated and duplicate updates are accepted")
+    func acceptsValidUpdates() throws {
+        let source = self.doc(clientID: 11)
         source.transact { transaction in
             source.text("content").insert(transaction, at: 0, "valid")
         }
@@ -32,7 +19,7 @@ struct CheckedUpdateTests {
             source.encodeStateAsUpdate(transaction)
         }
 
-        let target = backend.doc(clientID: 12)
+        let target = self.doc(clientID: 12)
         try target.transact { transaction in
             try target.applyUpdateChecked(transaction, Data([0, 0]))
             try target.applyUpdateChecked(transaction, update)
@@ -45,19 +32,16 @@ struct CheckedUpdateTests {
             } == "valid")
     }
 
-    @Test(
-        "clocks above the shared UInt32 range are rejected without divergence",
-        arguments: CheckedUpdateBackend.allCases
-    )
-    func rejectsClockAboveUInt32(backend: CheckedUpdateBackend) throws {
-        let target = backend.doc(clientID: 13)
+    @Test("clocks above the supported UInt32 range are rejected without divergence")
+    func rejectsClockAboveUInt32() throws {
+        let target = self.doc(clientID: 13)
         let initialState = target.transact { target.encodeStateAsUpdate($0) }
 
         do {
             try target.transact { transaction in
                 try target.applyUpdateChecked(transaction, Self.updateAboveUInt32Clock())
             }
-            Issue.record("\(backend.rawValue) must reject clocks above UInt32")
+            Issue.record("native implementation must reject clocks above UInt32")
         } catch let error as YError {
             #expect(error == .invalidUpdate)
         }
@@ -111,22 +95,9 @@ struct CheckedUpdateTests {
                 ]))
         try YUpdate.validateV1(update)
 
-        let native = CheckedUpdateBackend.native.doc(clientID: 14)
+        let native = self.doc(clientID: 14)
         try native.transact { try native.applyUpdateChecked($0, update) }
         #expect(native.transact { native.encodeStateAsUpdate($0) } == update)
-
-        // yrs uses Rust String/serde_json and cannot represent an unpaired UTF-16
-        // surrogate. It must fail explicitly, before mutating, rather than accept
-        // a lossy replacement value.
-        let yrs = CheckedUpdateBackend.yrs.doc(clientID: 15)
-        let initialState = yrs.transact { yrs.encodeStateAsUpdate($0) }
-        do {
-            try yrs.transact { try yrs.applyUpdateChecked($0, update) }
-            Issue.record("yrs must report its unpaired-surrogate limitation")
-        } catch let error as YError {
-            #expect(error == .invalidUpdate)
-        }
-        #expect(yrs.transact { yrs.encodeStateAsUpdate($0) } == initialState)
     }
 
     @Test("unique nested Any object keys remain valid")
@@ -138,12 +109,9 @@ struct CheckedUpdateTests {
         try YUpdate.validateV1(Self.contentAnyUpdate(object))
     }
 
-    @Test(
-        "malformed wire throws before either backend mutates",
-        arguments: CheckedUpdateBackend.allCases
-    )
-    func rejectsMalformedWireWithoutMutation(backend: CheckedUpdateBackend) throws {
-        let target = backend.doc(clientID: 20)
+    @Test("malformed wire throws before the document mutates")
+    func rejectsMalformedWireWithoutMutation() throws {
+        let target = self.doc(clientID: 20)
         let initialState = target.transact { transaction in
             target.encodeStateAsUpdate(transaction)
         }
@@ -153,54 +121,18 @@ struct CheckedUpdateTests {
                 try target.transact { transaction in
                     try target.applyUpdateChecked(transaction, malformed.bytes)
                 }
-                Issue.record("\(backend.rawValue)/\(malformed.name) must throw")
+                Issue.record("\(malformed.name) must throw")
             } catch let error as YError {
-                #expect(error == .invalidUpdate, "\(backend.rawValue)/\(malformed.name)")
+                #expect(error == .invalidUpdate, "\(malformed.name)")
             } catch {
-                Issue.record("\(backend.rawValue)/\(malformed.name): unexpected \(error)")
+                Issue.record("\(malformed.name): unexpected \(error)")
             }
 
             let currentState = target.transact { transaction in
                 target.encodeStateAsUpdate(transaction)
             }
-            #expect(currentState == initialState, "\(backend.rawValue)/\(malformed.name) mutated")
+            #expect(currentState == initialState, "\(malformed.name) mutated")
         }
-    }
-
-    @Test("yrs reports a late semantic error after a valid prefix")
-    func yrsRejectsLateSemanticError() throws {
-        let source = YDoc(engine: YrsEngine(clientID: 1, gc: true))
-        source.transact { transaction in
-            source.text("content").insert(transaction, at: 0, "A")
-        }
-        let baseline = source.transact { transaction in
-            source.encodeStateAsUpdate(transaction)
-        }
-
-        let disposable = YDoc(engine: YrsEngine(clientID: 3, gc: true))
-        try disposable.transact { transaction in
-            try disposable.applyUpdateChecked(transaction, baseline)
-        }
-
-        do {
-            try disposable.transact { transaction in
-                try disposable.applyUpdateChecked(
-                    transaction, Self.updateWithValidPrefixAndInvalidParent()
-                )
-            }
-            Issue.record("yrs must surface InvalidParent as invalidUpdate")
-        } catch let error as YError {
-            #expect(error == .invalidUpdate)
-        }
-
-        // yrs can integrate the valid prefix before discovering InvalidParent.
-        // Production callers must discard this document, as the checked API docs require.
-        #expect(
-            disposable.transact { transaction in
-                disposable.text("other").string(transaction)
-            } == "V"
-        )
-        disposable.destroy()
     }
 
     private static func malformedUpdates() -> [(name: String, bytes: Data)] {
@@ -236,15 +168,15 @@ struct CheckedUpdateTests {
             ("declared-count-exceeds-buffer", Data([0x7f, 0x00])),
             ("client-id-outside-yjs-range", Data(clientOverflow)),
             ("struct-clock-end-overflow", Self.gcUpdate(firstClock: UInt64(UInt32.max), length: 1)),
-            ("struct-length-outside-yrs-range", Self.gcUpdate(firstClock: 0, length: UInt64(UInt32.max) + 1)),
-            ("id-clock-outside-yrs-range", Data(idClockOverflow)),
+            ("struct-length-outside-supported-range", Self.gcUpdate(firstClock: 0, length: UInt64(UInt32.max) + 1)),
+            ("id-clock-outside-supported-range", Data(idClockOverflow)),
             ("zero-length-gc", Data([1, 1, 1, 0, 0, 0, 0])),
             ("zero-length-skip", Data([1, 1, 1, 0, 10, 0, 0])),
             ("zero-length-content-deleted", Data([1, 1, 1, 0, 1, 1, 1, 0x74, 0, 0])),
             ("zero-length-content-string", Data([1, 1, 1, 0, 4, 1, 1, 0x74, 0, 0])),
             ("zero-length-delete-range", Self.deleteSetUpdate(client: 42, clock: 0, length: 0)),
             (
-                "delete-clock-outside-yrs-range",
+                "delete-clock-outside-supported-range",
                 Self.deleteSetUpdate(client: 42, clock: UInt64(UInt32.max) + 1, length: 1)
             ),
             (
@@ -307,28 +239,6 @@ struct CheckedUpdateTests {
         bytes += [1]
         bytes += Self.varUint(clock)
         bytes += Self.varUint(length)
-        return Data(bytes)
-    }
-
-    private static func updateWithValidPrefixAndInvalidParent() -> Data {
-        var bytes: [UInt8] = []
-        bytes += Self.varUint(1)  // client blocks
-        bytes += Self.varUint(2)  // structs for client 2
-        bytes += Self.varUint(2)  // client
-        bytes += Self.varUint(0)  // first clock
-
-        bytes.append(4)  // ContentString
-        bytes += Self.varUint(1)  // root-key parent
-        bytes += Self.varString("other")
-        bytes += Self.varString("V")
-
-        bytes.append(4)  // ContentString
-        bytes += Self.varUint(0)  // id parent
-        bytes += Self.varUint(1)  // parent client: existing string item
-        bytes += Self.varUint(0)  // parent clock
-        bytes += Self.varString("X")
-
-        bytes += Self.varUint(0)  // empty delete set
         return Data(bytes)
     }
 

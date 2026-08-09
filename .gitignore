@@ -38,11 +38,6 @@ build/
 *.dSYM.zip
 *.dSYM
 
-# ---- Rust / yffi build (Phase 1) ----
-target/
-**/*.rs.bk
-*.pdb
-
 # ---- Node / fixtures generator ----
 node_modules/
 npm-debug.log*

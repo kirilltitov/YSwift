@@ -4,12 +4,16 @@ import FoundationEssentials
 import Foundation
 #endif
 
+/// Builds the pure-Swift engine backing a new `YDoc`.
+func makeDefaultEngine(clientID: UInt64?, gc: Bool) -> NativeEngine {
+    NativeEngine(clientID: clientID, gc: gc)
+}
+
 /// Default engine: the pure-Swift YATA + `lib0` implementation behind `YEngine`.
-/// Wraps a `NativeDoc` and is differentially checked against Yjs/`YrsEngine`.
+/// Wraps a `NativeDoc` and is checked against recorded Yjs fixtures.
 ///
-/// `@unchecked Sendable` under the same invariant as `YrsEngine`: the owning
-/// `YDoc`'s `Mutex` serialises every call, so the mutable `NativeDoc` is never
-/// touched concurrently.
+/// `@unchecked Sendable`: the owning `YDoc`'s `Mutex` serialises every call, so
+/// the mutable `NativeDoc` is never touched concurrently.
 ///
 final class NativeEngine: YEngine, @unchecked Sendable {
     let doc: NativeDoc
@@ -30,7 +34,7 @@ final class NativeEngine: YEngine, @unchecked Sendable {
 
     func beginTransaction(origin: Origin?, writable: Bool) -> YTransaction {
         self.doc.beginTransaction(origin: origin)
-        return YTransaction(engine: self, origin: origin, writable: writable, raw: nil)
+        return YTransaction(engine: self, origin: origin, writable: writable)
     }
 
     func endTransaction(_ txn: YTransaction) {

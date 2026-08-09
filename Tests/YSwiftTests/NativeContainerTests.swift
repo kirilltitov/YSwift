@@ -77,11 +77,10 @@ struct NativeContainerTests {
         return try JSONDecoder().decode(ContainerFixtures.self, from: Data(contentsOf: url))
     }
 
-    /// Containers are a native-engine-only feature, so build the doc on the native
-    /// engine explicitly (independent of the YSWIFT_ENGINE default) — YrsEngine
-    /// traps on container calls.
+    /// Build through the public initializer so the fixtures cover the package's
+    /// sole production implementation.
     private func doc(clientID: UInt64) -> YDoc {
-        YDoc(engine: NativeEngine(clientID: clientID, gc: true))
+        YDoc(clientID: clientID)
     }
 
     private func values(fromJSON json: String) throws -> [YValue] {

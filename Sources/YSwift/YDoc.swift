@@ -8,8 +8,7 @@ import Foundation
 
 /// A collaborative document: the root container for CRDT shared state.
 ///
-/// Backend-agnostic: `NativeEngine` is the default, while the optional
-/// `YrsEngine` remains available as a differential oracle.
+/// Backed by the package's pure-Swift `NativeEngine` implementation.
 public final class YDoc: Sendable {
     /// This client's unique id (Yjs 53-bit client id).
     public let clientID: UInt64
@@ -17,7 +16,7 @@ public final class YDoc: Sendable {
     let engine: any YEngine
 
     /// Serializes transactions: at most one active write transaction per
-    /// document (requirements §9.5). Both engines rely on this.
+    /// document (requirements §9.5). The native engine relies on this.
     private let sync = Mutex<Void>(())
 
     /// Creates a document with a random 53-bit client id.
@@ -38,9 +37,8 @@ public final class YDoc: Sendable {
         self.clientID = engine.clientID
     }
 
-    /// Injects a specific engine. Internal seam for A/B differential testing
-    /// (NativeEngine vs YrsEngine); the public initializers always go through
-    /// `makeDefaultEngine`.
+    /// Injects an engine through the internal seam. Public initializers always
+    /// construct the native implementation through `makeDefaultEngine`.
     init(engine: any YEngine) {
         self.engine = engine
         self.clientID = engine.clientID
@@ -52,19 +50,17 @@ public final class YDoc: Sendable {
     }
 
     /// Returns the top-level array type under `name` (analogue of Yjs `getArray`).
-    /// Container types require the native engine.
     public func array(_ name: String) -> YArray {
         YArray(doc: self, name: name)
     }
 
     /// Returns the top-level map type under `name` (analogue of Yjs `getMap`).
-    /// Container types require the native engine.
     public func map(_ name: String) -> YMap {
         YMap(doc: self, name: name)
     }
 
     /// Returns the top-level XML fragment under `name` (analogue of Yjs
-    /// `getXmlFragment`). Container types require the native engine.
+    /// `getXmlFragment`).
     public func xmlFragment(_ name: String) -> YXmlFragment {
         YXmlFragment(doc: self, name: name)
     }
@@ -126,8 +122,8 @@ extension YDoc {
 
     /// Applies a remote update while preserving the legacy nonthrowing contract.
     ///
-    /// Structural validation runs before backend integration, but every failure
-    /// is swallowed. A late backend error may therefore leave a valid prefix
+    /// Structural validation runs before engine integration, but every failure
+    /// is swallowed. A late engine error may therefore leave a valid prefix
     /// integrated without telling the caller. Retain this API only for source
     /// compatibility; external input must use `applyUpdateChecked(_:_:origin:)`
     /// with a disposable document.
@@ -141,16 +137,16 @@ extension YDoc {
     /// Strictly validates and applies a remote v1 update.
     ///
     /// `YUpdate.validateV1` first verifies one complete, bounded v1 wire value
-    /// without touching the backend. Structural failures and later backend
+    /// without touching the engine. Structural failures and later engine
     /// integration errors are both reported as `YError.invalidUpdate`.
     /// Structural success alone does not prove causal integrability or
-    /// backend-specific materialisability.
+    /// materialisability by the document engine.
     ///
     /// The `origin` argument is retained for source compatibility and does not
     /// retag the open transaction. Use `transact(origin:_:)` to mark the source
     /// for `onUpdate` listeners.
     ///
-    /// Application is not rollback-atomic: a backend may discover a semantic
+    /// Application is not rollback-atomic: integration may discover a semantic
     /// integration error after integrating an earlier valid prefix. Callers must
     /// therefore apply untrusted input to a disposable document and discard that
     /// document whenever this method throws.

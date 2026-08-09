@@ -11,11 +11,8 @@ public struct TextHandle: Sendable, Hashable {
 
 /// The internal seam between the stable public API and a concrete backend.
 ///
-/// - `NativeEngine` — the default pure-Swift YATA + `lib0` implementation.
-/// - `YrsEngine` — the optional Rust `yrs` differential oracle via the `cyrs`
-///   C ABI.
-///
-/// Both must preserve the shared public contract and compatible wire output.
+/// `NativeEngine` provides the pure-Swift YATA + `lib0` implementation. Keeping
+/// this protocol internal isolates the public wrappers from storage details.
 /// This protocol is internal and may evolve without exposing engine details.
 protocol YEngine: AnyObject, Sendable {
     var clientID: UInt64 { get }
@@ -60,8 +57,6 @@ protocol YEngine: AnyObject, Sendable {
     func observeText(_ handle: TextHandle, _ callback: @escaping @Sendable (YTextEvent) -> Void) -> YSubscription
 
     // Container types (Y.Array / Y.Map) — an extension beyond the §4 text subset.
-    // Only the native engine implements these; the trapping defaults below apply to
-    // engines (e.g. YrsEngine) whose FFI doesn't wire containers.
     func arrayInsert(in txn: YTransaction, _ name: String, at index: Int, _ values: [YValue])
     func arrayDelete(in txn: YTransaction, _ name: String, at index: Int, count: Int)
     func arrayLength(in txn: YTransaction, _ name: String) -> Int
@@ -77,29 +72,4 @@ protocol YEngine: AnyObject, Sendable {
     func xmlString(in txn: YTransaction, _ name: String) -> String
 
     func destroy()
-}
-
-extension YEngine {
-    private func containersUnsupported() -> Never {
-        preconditionFailure("container types (Y.Array / Y.Map) require the native engine")
-    }
-    func arrayInsert(in txn: YTransaction, _ name: String, at index: Int, _ values: [YValue]) {
-        self.containersUnsupported()
-    }
-    func arrayDelete(in txn: YTransaction, _ name: String, at index: Int, count: Int) {
-        self.containersUnsupported()
-    }
-    func arrayLength(in txn: YTransaction, _ name: String) -> Int { self.containersUnsupported() }
-    func arrayValues(in txn: YTransaction, _ name: String) -> [YValue] { self.containersUnsupported() }
-    func mapSet(in txn: YTransaction, _ name: String, _ key: String, _ value: YValue) {
-        self.containersUnsupported()
-    }
-    func mapDelete(in txn: YTransaction, _ name: String, _ key: String) { self.containersUnsupported() }
-    func mapGet(in txn: YTransaction, _ name: String, _ key: String) -> YValue? { self.containersUnsupported() }
-    func mapKeys(in txn: YTransaction, _ name: String) -> [String] { self.containersUnsupported() }
-    func mapToDictionary(in txn: YTransaction, _ name: String) -> [String: YValue] { self.containersUnsupported() }
-    func xmlInsert(in txn: YTransaction, _ name: String, at index: Int, _ nodes: [YXmlNode]) {
-        self.containersUnsupported()
-    }
-    func xmlString(in txn: YTransaction, _ name: String) -> String { self.containersUnsupported() }
 }

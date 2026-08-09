@@ -491,7 +491,7 @@ const sticky = [
 const semantic = [
   semanticFixture(
     'multi_attr_format',
-    'multi-attribute format: yrs writes the independent per-attribute structs in HashMap order, differing from yjs insertion order — semantically identical (converges) but not byte-identical',
+    'multi-attribute format: Swift dictionaries do not preserve caller insertion order, so YSwift emits deterministic sorted-key order — semantically identical (converges) but not always byte-identical to yjs',
     1001,
     [{ op: 'insert', index: 0, text: 'text' }, { op: 'format', index: 0, length: 4, attributes: { bold: true, italic: true } }]
   ),

@@ -16,11 +16,8 @@ public enum YUpdate {
     /// Rejects trailing data, non-canonical or overflowing integers, invalid
     /// UTF-8/JSON, unsafe declared sizes and invalid control values. Dynamic
     /// objects are checked recursively for duplicate keys and `__proto__`.
-    /// Success does not validate causal references against a document and does
-    /// not guarantee that every backend can materialise every legal wire value.
-    /// For example, escaped unpaired UTF-16 surrogates pass this structural
-    /// check and round-trip through `NativeEngine`, while `YrsEngine` rejects
-    /// them during application because Rust strings cannot represent them.
+    /// Success does not validate causal references against a document or prove
+    /// that the update can be integrated into a particular document state.
     public static func validateV1(_ update: Data) throws {
         do {
             _ = try UpdateCodec.readUpdate(Array(update))

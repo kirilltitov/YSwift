@@ -6,11 +6,7 @@ import FoundationEssentials
 import Foundation
 #endif
 
-// Micro-benchmarks over the public YSwift API. The engine is chosen by
-// makeDefaultEngine (YSWIFT_ENGINE=yrs for the Rust oracle, native otherwise), so
-// run this twice and diff the two outputs.
-
-let engineName = ProcessInfo.processInfo.environment["YSWIFT_ENGINE"] ?? "native"
+// Micro-benchmarks over the public, pure-Swift YSwift API.
 
 func milliseconds(_ duration: Duration) -> Double {
     let (seconds, attoseconds) = duration.components
@@ -52,7 +48,7 @@ func buildManyItemDoc(_ count: Int) -> YDoc {
     return doc
 }
 
-print("=== YSwift benchmarks [engine: \(engineName)] ===")
+print("=== YSwift native benchmarks ===")
 
 // W1: append-typing — insert one char at the END, N times (one transaction).
 for n in [1000, 4000] {
@@ -108,4 +104,4 @@ measure("text.string 5000", iterations: 50) {
     _ = bigDoc.transact { txn in bigDoc.text("content").string(txn) }
 }
 
-print("=== done [\(engineName)] ===")
+print("=== done ===")

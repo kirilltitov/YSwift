@@ -16,18 +16,5 @@ jobs:
       - name: Lint (swift-format)
         run: swift format lint --strict --recursive Sources Tests Package.swift
 
-      - name: Install build prerequisites
-        # The swift image ships neither curl nor a C toolchain (cc), which the
-        # Rust toolchain and its linking step both need.
-        run: apt-get update && apt-get install -y curl build-essential
-
-      - name: Install Rust toolchain
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-      - name: Cross-check yrs against the golden vectors
-        run: make rust-test
-
-      - name: Build the cyrs staticlib and run the conformance suite
-        run: make test
+      - name: Build and run the conformance suite
+        run: swift test

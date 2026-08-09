@@ -209,8 +209,7 @@ struct GoldenVectorTests {
 
     // The conformance tests below are the project's core acceptance criterion:
     // for the same operations the port must emit byte-identical bytes, and it
-    // must reconstruct the same text from the reference updates. They are enabled
-    // once a real engine (Phase 1: YrsEngine) is wired; the stub engine traps.
+    // must reconstruct the same text from the reference updates.
 
     @Test("golden-encode: replaying ops yields byte-identical update + state vector")
     func goldenEncode() throws {

@@ -11,23 +11,11 @@ let package = Package(
         .library(name: "YSwift", targets: ["YSwift"])
     ],
     targets: [
-        // C ABI over the Rust `yrs` CRDT (the `cyrs` crate under rust/cyrs).
-        // The static library must be built first: `cargo build --release` in rust/cyrs.
-        .systemLibrary(name: "CYrs", path: "Sources/CYrs"),
-
-        // Phase 1/2 public API + engine seam, backed by YrsEngine (Yrs facade).
+        // Public API + pure-Swift CRDT implementation.
         .target(
             name: "YSwift",
-            dependencies: ["CYrs"],
             swiftSettings: [
                 .swiftLanguageMode(.v6)
-            ],
-            linkerSettings: [
-                .unsafeFlags(["-Lrust/cyrs/target/release", "-lcyrs"]),
-                // A Rust staticlib pulls these in on Linux; ignored on Apple platforms.
-                .linkedLibrary("pthread", .when(platforms: [.linux])),
-                .linkedLibrary("dl", .when(platforms: [.linux])),
-                .linkedLibrary("m", .when(platforms: [.linux])),
             ]
         ),
         .testTarget(
@@ -40,19 +28,12 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
-        // Micro-benchmarks over the PUBLIC API. Select the backend with the
-        // YSWIFT_ENGINE env var (native default / yrs) and diff the two runs.
+        // Micro-benchmarks over the public API.
         .executableTarget(
             name: "YSwiftBench",
             dependencies: ["YSwift"],
             swiftSettings: [
                 .swiftLanguageMode(.v6)
-            ],
-            linkerSettings: [
-                .unsafeFlags(["-Lrust/cyrs/target/release", "-lcyrs"]),
-                .linkedLibrary("pthread", .when(platforms: [.linux])),
-                .linkedLibrary("dl", .when(platforms: [.linux])),
-                .linkedLibrary("m", .when(platforms: [.linux])),
             ]
         ),
     ]

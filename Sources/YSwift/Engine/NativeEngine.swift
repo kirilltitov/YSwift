@@ -41,12 +41,36 @@ final class NativeEngine: YEngine, @unchecked Sendable {
         self.doc.commitTransaction()
     }
 
+    func changedRootNames(in txn: YTransaction) -> Set<String>? {
+        guard txn.engine === self, self.doc.store.changedRootNamesAreComplete else {
+            return nil
+        }
+        return self.doc.store.changedTypeNames
+    }
+
+    func hasPendingUpdates(in txn: YTransaction) -> Bool? {
+        guard txn.engine === self else {
+            return nil
+        }
+        return self.doc.hasPendingUpdates
+    }
+
     // MARK: Text operations
 
     func textInsert(
         in txn: YTransaction, _ handle: TextHandle, at index: Int, _ string: String, attributes: Attributes?
     ) {
         self.doc.text(handle.name).insert(index, string, attributes: attributes.map(Self.lib0Attributes))
+    }
+
+    func textInsertEmbed(
+        in txn: YTransaction, _ handle: TextHandle, at index: Int, _ embed: YValue, attributes: Attributes?
+    ) {
+        self.doc.text(handle.name).insertEmbed(
+            index,
+            JSONValue.string(from: Self.lib0(embed)),
+            attributes: attributes.map(Self.lib0Attributes),
+        )
     }
 
     func textDelete(in txn: YTransaction, _ handle: TextHandle, at index: Int, length: Int) {
@@ -100,6 +124,29 @@ final class NativeEngine: YEngine, @unchecked Sendable {
     func stickyToIndex(in txn: YTransaction, _ raw: Data) -> Int? {
         guard let position = try? NativeRelativePosition.decode(Array(raw)) else { return nil }
         return self.doc.resolve(position)?.index
+    }
+
+    func stickyToIndex(
+        in txn: YTransaction,
+        _ raw: Data,
+        expectedRoot: TextHandle,
+        expectedAssoc: StickyIndex.Assoc?,
+    ) -> Int? {
+        guard txn.engine === self,
+            let position = try? NativeRelativePosition.decode(Array(raw)),
+            Data(position.encode()) == raw,
+            position.tname == nil || position.tname == expectedRoot.name,
+            let resolved = self.doc.resolve(position),
+            resolved.type === self.doc.get(expectedRoot.name),
+            resolved.index >= 0,
+            resolved.index <= resolved.type.length
+        else {
+            return nil
+        }
+        if let expectedAssoc, position.assoc != (expectedAssoc == .before ? -1 : 0) {
+            return nil
+        }
+        return resolved.index
     }
 
     // MARK: Observers

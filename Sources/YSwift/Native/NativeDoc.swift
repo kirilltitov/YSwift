@@ -111,6 +111,7 @@ final class NativeDoc {
             self.txnStartIntegratedCount = self.store.integratedCount
             self.store.deleteLog = []
             self.store.changedTypeNames = []
+            self.store.changedRootNamesAreComplete = true
             self.txnOrigin = origin
         }
         self.txnDepth += 1
@@ -257,6 +258,8 @@ final class NativeDoc {
     /// not present). Retried as later updates arrive, so out-of-order or partial
     /// delivery converges (the role of yjs `pendingStructs` / `pendingDs`).
     private var pendingUpdates: [[UInt8]] = []
+
+    var hasPendingUpdates: Bool { !self.pendingUpdates.isEmpty }
 
     /// Decodes and integrates a v1 update; buffers and retries anything that
     /// depends on data not yet present.

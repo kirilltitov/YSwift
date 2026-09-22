@@ -115,6 +115,30 @@ extension YDoc {
         self.engine.encodeStateAsUpdate(in: txn, since: sv)
     }
 
+    /// Returns top-level roots integrated or deleted so far in this transaction.
+    ///
+    /// Read inside `transact` after applying an update. The returned set is an immutable value.
+    /// Buffered causal updates count when they integrate; duplicate deliveries return no roots.
+    /// Nil means complete root coverage could not be established (for example a nested type).
+    /// Callers using this set to validate content must take a full-validation fallback on nil.
+    /// Failed untrusted candidates must still be discarded: application is not rollback-atomic.
+    public func changedRootNames(_ txn: YTransaction) -> Set<String>? {
+        guard txn.engine === self.engine else {
+            return nil
+        }
+        return self.engine.changedRootNames(in: txn)
+    }
+
+    /// Reports buffered causal structs or deletes omitted from `encodeStateAsUpdate`.
+    /// A false result proves no hidden pending update is carried by this document. Nil means the
+    /// transaction belongs to another document; callers must not treat that as absence of pending work.
+    public func hasPendingUpdates(_ txn: YTransaction) -> Bool? {
+        guard txn.engine === self.engine else {
+            return nil
+        }
+        return self.engine.hasPendingUpdates(in: txn)
+    }
+
     /// Encodes the current state vector (`client -> clock`).
     public func encodeStateVector(_ txn: YTransaction) -> StateVector {
         self.engine.encodeStateVector(in: txn)

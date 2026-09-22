@@ -3,6 +3,8 @@
 public enum YError: Error, Sendable, Hashable {
     /// An update failed structural validation or engine integration.
     case invalidUpdate
+    /// A document-less operation requires structs or deletions absent from its input.
+    case causalDependenciesMissing
     /// A `YTransaction` was used outside the `transact` closure that created it.
     case transactionEscaped
     /// The backend engine failed; carries a human-readable reason.

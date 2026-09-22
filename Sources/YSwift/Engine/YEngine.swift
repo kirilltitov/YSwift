@@ -21,9 +21,13 @@ protocol YEngine: AnyObject, Sendable {
 
     func beginTransaction(origin: Origin?, writable: Bool) -> YTransaction
     func endTransaction(_ txn: YTransaction)
+    func changedRootNames(in txn: YTransaction) -> Set<String>?
+    func hasPendingUpdates(in txn: YTransaction) -> Bool?
 
     func textInsert(
         in txn: YTransaction, _ handle: TextHandle, at index: Int, _ string: String, attributes: Attributes?)
+    func textInsertEmbed(
+        in txn: YTransaction, _ handle: TextHandle, at index: Int, _ embed: YValue, attributes: Attributes?)
     func textDelete(in txn: YTransaction, _ handle: TextHandle, at index: Int, length: Int)
     func textFormat(in txn: YTransaction, _ handle: TextHandle, at index: Int, length: Int, attributes: Attributes)
     func textString(in txn: YTransaction, _ handle: TextHandle) -> String
@@ -36,6 +40,12 @@ protocol YEngine: AnyObject, Sendable {
 
     func stickyFromIndex(in txn: YTransaction, _ handle: TextHandle, index: Int, assoc: StickyIndex.Assoc) -> Data?
     func stickyToIndex(in txn: YTransaction, _ raw: Data) -> Int?
+    func stickyToIndex(
+        in txn: YTransaction,
+        _ raw: Data,
+        expectedRoot: TextHandle,
+        expectedAssoc: StickyIndex.Assoc?,
+    ) -> Int?
 
     func makeUndoManager(_ handle: TextHandle, trackedOrigins: Set<Origin>, captureTimeoutMillis: UInt64) -> AnyObject?
     func undoManagerUndo(_ mgr: AnyObject) -> Bool

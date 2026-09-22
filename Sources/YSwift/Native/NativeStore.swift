@@ -39,6 +39,16 @@ final class NativeStore {
     /// When non-nil, collects the names of root types changed during the current
     /// transaction (integrated/deleted items), for firing text observers on commit.
     var changedTypeNames: Set<String>?
+    /// Immediate parent names used by observers do not prove top-level root coverage for nested
+    /// types. Keep observer behavior intact and fail closed for that validation path.
+    var changedRootNamesAreComplete = true
+
+    private func checkChangedRootCompleteness(of item: Item) {
+        guard let parent = item.parent, parent.item == nil, parent.name != nil else {
+            self.changedRootNamesAreComplete = false
+            return
+        }
+    }
 
     /// Marks `item` deleted, keeps parent length in sync, and records the deletion
     /// for the active transaction (`Item.delete`).
@@ -51,6 +61,7 @@ final class NativeStore {
         self.version += 1
         self.deleteLog?.append((item.id.client, item.id.clock, item.length))
         if let name = item.parent?.name { self.changedTypeNames?.insert(name) }
+        self.checkChangedRootCompleteness(of: item)
     }
 
     /// Next expected clock for `client` (0 if unseen).
@@ -79,6 +90,7 @@ final class NativeStore {
         self.integratedCount += 1
         self.version += 1
         if let name = (`struct` as? Item)?.parent?.name { self.changedTypeNames?.insert(name) }
+        if let item = `struct` as? Item { self.checkChangedRootCompleteness(of: item) }
     }
 
     /// Binary search for the struct covering `clock` (ported from `findIndexSS`,

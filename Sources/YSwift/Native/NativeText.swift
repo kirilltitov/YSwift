@@ -136,6 +136,21 @@ final class NativeText {
         }
     }
 
+    /// Inserts one embedded value at `index` (`ContentEmbed`, `Y.Text.insertEmbed`).
+    ///
+    /// The embed occupies exactly one code unit of the type's length, the same as in Yjs, so every
+    /// index the caller holds shifts by one. `json` is the embed's own JSON, already serialized.
+    func insertEmbed(_ index: Int, _ json: String, attributes: [String: Lib0Any]? = nil) {
+        self.doc.transact {
+            let pos = self.findPosition(index)
+            var attrs = attributes.map(Self.jsonAttributes) ?? [:]
+            if attributes == nil {
+                for (key, value) in pos.attributes where attrs[key] == nil { attrs[key] = value }
+            }
+            self.insertContent(pos, content: .embed(json: json), attributes: attrs)
+        }
+    }
+
     func delete(_ index: Int, _ length: Int) {
         guard length > 0 else { return }
         self.doc.transact {
@@ -213,12 +228,17 @@ final class NativeText {
     // MARK: Insert
 
     private func insertText(_ pos: TextPosition, text: [UInt16], attributes: [String: String]) {
+        self.insertContent(pos, content: .string(text), attributes: attributes)
+    }
+
+    /// The shared body of every insertion: text and embeds differ only in the content they carry.
+    private func insertContent(_ pos: TextPosition, content: Content, attributes: [String: String]) {
         var attributes = attributes
         for key in pos.attributes.keys where attributes[key] == nil { attributes[key] = "null" }
         self.minimizeAttributeChanges(pos, attributes)
         let negated = self.insertAttributes(pos, attributes)
         let insertIndex = pos.index
-        let item = self.makeItem(pos, content: .string(text))
+        let item = self.makeItem(pos, content: content)
         pos.right = item
         pos.forward()
         self.insertNegatedAttributes(pos, negated)
@@ -427,6 +447,11 @@ final class NativeText {
                 case .format(let key, let value):
                     packRun()
                     setAttribute(key, value)
+                case .embed(let json):
+                    // An embed is its own op: the run before it closes, and the embed carries the
+                    // formatting in force at its position, exactly as `Y.Text.toDelta` reports it.
+                    packRun()
+                    ops.append("{\"insert\":\(json)\(attributesObject())}")
                 default:
                     break
                 }

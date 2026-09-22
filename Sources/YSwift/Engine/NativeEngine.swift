@@ -116,6 +116,29 @@ final class NativeEngine: YEngine, @unchecked Sendable {
         return self.doc.resolve(position)?.index
     }
 
+    func stickyToIndex(
+        in txn: YTransaction,
+        _ raw: Data,
+        expectedRoot: TextHandle,
+        expectedAssoc: StickyIndex.Assoc?,
+    ) -> Int? {
+        guard txn.engine === self,
+            let position = try? NativeRelativePosition.decode(Array(raw)),
+            Data(position.encode()) == raw,
+            position.tname == nil || position.tname == expectedRoot.name,
+            let resolved = self.doc.resolve(position),
+            resolved.type === self.doc.get(expectedRoot.name),
+            resolved.index >= 0,
+            resolved.index <= resolved.type.length
+        else {
+            return nil
+        }
+        if let expectedAssoc, position.assoc != (expectedAssoc == .before ? -1 : 0) {
+            return nil
+        }
+        return resolved.index
+    }
+
     // MARK: Observers
 
     func onUpdate(_ callback: @escaping @Sendable (Data, Origin?) -> Void) -> YSubscription {

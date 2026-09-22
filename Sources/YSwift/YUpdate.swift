@@ -8,8 +8,8 @@ import Foundation
 /// without a resident document (requirements §4.3).
 ///
 /// Implemented over the pure-Swift engine: a throwaway `NativeDoc` integrates the
-/// input(s) and re-encodes. For valid complete updates this is byte-identical to
-/// yjs `mergeUpdates` / `diffUpdate` (see the native encode round-trip tests).
+/// input(s) and re-encodes. It accepts causally complete inputs only; unlike the
+/// general Yjs wire utilities, it cannot merge or diff unresolved partial updates.
 public enum YUpdate {
     /// Structurally validates one complete Yjs v1 update without integrating it.
     ///
@@ -26,26 +26,38 @@ public enum YUpdate {
         }
     }
 
-    /// Merges several updates into one, de-duplicating shared structure.
-    ///
-    /// Inputs are assumed to be trusted complete updates. This compatibility API
-    /// does not report malformed inputs; validate untrusted bytes with
-    /// `validateV1(_:)` first.
-    public static func merge(_ updates: [Data]) -> Data {
-        guard !updates.isEmpty else { return Data() }
-        let doc = NativeDoc()
-        for update in updates { try? doc.applyUpdate(Array(update)) }
-        return Data(doc.encodeStateAsUpdate())
+    /// Compacts a causally complete set of updates. Partial updates require their baseline:
+    /// this implementation deliberately throws instead of silently discarding unresolved items
+    /// or deletions. Callers that own a document should encode its delta at the previous frontier.
+    public static func merge(_ updates: [Data]) throws -> Data {
+        let document = NativeDoc()
+        do {
+            for update in updates {
+                try document.applyUpdate(Array(update))
+            }
+        } catch {
+            throw YError.invalidUpdate
+        }
+        guard !document.hasPendingUpdates else {
+            throw YError.causalDependenciesMissing
+        }
+        return Data(document.encodeStateAsUpdate())
     }
 
-    /// The portion of `update` a peer at state vector `sv` is missing.
-    ///
-    /// Both inputs are assumed valid. This compatibility API does not report
-    /// malformed input; validate untrusted update bytes before calling it.
-    public static func diff(_ update: Data, since sv: StateVector) -> Data {
-        let doc = NativeDoc()
-        try? doc.applyUpdate(Array(update))
-        let target = (try? NativeDoc.decodeStateVector(Array(sv.data))) ?? [:]
-        return Data(doc.encodeStateAsUpdate(target: target))
+    /// The portion of a causally complete update missing from the supplied state vector.
+    /// Partial updates are rejected because encoding an unresolved document loses their content.
+    public static func diff(_ update: Data, since sv: StateVector) throws -> Data {
+        let document = NativeDoc()
+        let target: [UInt64: UInt64]
+        do {
+            try document.applyUpdate(Array(update))
+            target = try NativeDoc.decodeStateVector(Array(sv.data))
+        } catch {
+            throw YError.invalidUpdate
+        }
+        guard !document.hasPendingUpdates else {
+            throw YError.causalDependenciesMissing
+        }
+        return Data(document.encodeStateAsUpdate(target: target))
     }
 }

@@ -306,7 +306,7 @@ struct GoldenVectorTests {
         let suite = try Golden.loadSuite()
         for f in suite.merge {
             let inputs = try f.inputs.map { try #require(Data(base64Encoded: $0)) }
-            let merged = YUpdate.merge(inputs)
+            let merged = try YUpdate.merge(inputs)
             let doc = YDoc(clientID: 7)
             doc.transact { txn in doc.applyUpdate(txn, merged) }
             #expect(doc.transact { txn in doc.text(suite.meta.key).string(txn) } == f.text, "\(f.name)")
@@ -320,7 +320,7 @@ struct GoldenVectorTests {
             let full = try #require(Data(base64Encoded: f.full))
             let base = try #require(Data(base64Encoded: f.base))
             let sv = StateVector(data: try #require(Data(base64Encoded: f.sinceStateVector)))
-            let diff = YUpdate.diff(full, since: sv)
+            let diff = try YUpdate.diff(full, since: sv)
             let doc = YDoc(clientID: 7)
             doc.transact { txn in
                 doc.applyUpdate(txn, base)  // state == sinceStateVector

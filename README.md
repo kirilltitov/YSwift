@@ -30,6 +30,18 @@ Verification: golden vectors + concurrent convergence + a recorded randomised
 differential fuzz (text/array/map) + adversarial code review. The public surface
 is gated directly against Yjs fixtures and convergence scenarios.
 
+### Document-less update limits
+
+`YUpdate.merge` and `YUpdate.diff` throw `YError.causalDependenciesMissing` when
+an input depends on structures or deletions absent from the supplied updates.
+These helpers compact causally complete inputs; they do not implement Yjs's
+arbitrary partial-update wire merge. Invalid inputs throw `YError.invalidUpdate`.
+
+When a caller owns the baseline document, apply the changes to that document and
+use `encodeStateAsUpdate` with its previous state vector. This preserves deleted
+items and the identities needed by later input. `YUpdateCausalClosureTests`
+covers partial insertion, partial deletion, compensation, and late input.
+
 The former Rust/`yrs` differential oracle remains available on the
 [`engine/yrs` maintenance branch](https://github.com/kirilltitov/YSwift/tree/engine/yrs).
 It is intentionally not part of `main` or the published pure-Swift package.

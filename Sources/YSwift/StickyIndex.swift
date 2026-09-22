@@ -32,6 +32,17 @@ public struct StickyIndex: Sendable, Hashable {
         txn.engine.stickyToIndex(in: txn, self.raw) ?? -1
     }
 
+    /// Resolves only inside the expected text root, using UTF-16 coordinates.
+    /// Returns nil for another root or transaction owner, unavailable item identities, or
+    /// noncanonical encoded positions. An expected association checks the encoded anchor directly,
+    /// including when its referenced item was deleted. Positions remain portable between replicas.
+    public func toIndex(_ txn: YTransaction, in expectedText: YText, assoc: Assoc? = nil) -> Int? {
+        guard txn.engine === expectedText.doc.engine else {
+            return nil
+        }
+        return txn.engine.stickyToIndex(in: txn, self.raw, expectedRoot: expectedText.handle, expectedAssoc: assoc)
+    }
+
     /// The wire-compatible encoded form.
     public func encode() -> Data { self.raw }
 

@@ -21,6 +21,17 @@ public final class YText: Sendable {
         self.doc.engine.textInsert(in: txn, self.handle, at: index, string, attributes: attributes)
     }
 
+    /// Inserts one embedded value at `index`, optionally with formatting `attributes`.
+    ///
+    /// The embed occupies exactly one code unit, as in Yjs, so every index after it shifts by one.
+    /// This is how a marker that is part of the text — a block boundary, say — is written into a
+    /// root without becoming characters anybody can type over.
+    public func insertEmbed(
+        _ txn: YTransaction, at index: Int, _ embed: YValue, attributes: Attributes? = nil,
+    ) {
+        self.doc.engine.textInsertEmbed(in: txn, self.handle, at: index, embed, attributes: attributes)
+    }
+
     /// Deletes `length` code units starting at `index`.
     public func delete(_ txn: YTransaction, at index: Int, length: Int) {
         self.doc.engine.textDelete(in: txn, self.handle, at: index, length: length)

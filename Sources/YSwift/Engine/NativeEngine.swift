@@ -63,6 +63,16 @@ final class NativeEngine: YEngine, @unchecked Sendable {
         self.doc.text(handle.name).insert(index, string, attributes: attributes.map(Self.lib0Attributes))
     }
 
+    func textInsertEmbed(
+        in txn: YTransaction, _ handle: TextHandle, at index: Int, _ embed: YValue, attributes: Attributes?
+    ) {
+        self.doc.text(handle.name).insertEmbed(
+            index,
+            JSONValue.string(from: Self.lib0(embed)),
+            attributes: attributes.map(Self.lib0Attributes),
+        )
+    }
+
     func textDelete(in txn: YTransaction, _ handle: TextHandle, at index: Int, length: Int) {
         self.doc.text(handle.name).delete(index, length)
     }

@@ -26,6 +26,8 @@ protocol YEngine: AnyObject, Sendable {
 
     func textInsert(
         in txn: YTransaction, _ handle: TextHandle, at index: Int, _ string: String, attributes: Attributes?)
+    func textInsertEmbed(
+        in txn: YTransaction, _ handle: TextHandle, at index: Int, _ embed: YValue, attributes: Attributes?)
     func textDelete(in txn: YTransaction, _ handle: TextHandle, at index: Int, length: Int)
     func textFormat(in txn: YTransaction, _ handle: TextHandle, at index: Int, length: Int, attributes: Attributes)
     func textString(in txn: YTransaction, _ handle: TextHandle) -> String

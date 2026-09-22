@@ -21,6 +21,8 @@ protocol YEngine: AnyObject, Sendable {
 
     func beginTransaction(origin: Origin?, writable: Bool) -> YTransaction
     func endTransaction(_ txn: YTransaction)
+    func changedRootNames(in txn: YTransaction) -> Set<String>?
+    func hasPendingUpdates(in txn: YTransaction) -> Bool?
 
     func textInsert(
         in txn: YTransaction, _ handle: TextHandle, at index: Int, _ string: String, attributes: Attributes?)

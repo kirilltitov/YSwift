@@ -41,6 +41,20 @@ final class NativeEngine: YEngine, @unchecked Sendable {
         self.doc.commitTransaction()
     }
 
+    func changedRootNames(in txn: YTransaction) -> Set<String>? {
+        guard txn.engine === self, self.doc.store.changedRootNamesAreComplete else {
+            return nil
+        }
+        return self.doc.store.changedTypeNames
+    }
+
+    func hasPendingUpdates(in txn: YTransaction) -> Bool? {
+        guard txn.engine === self else {
+            return nil
+        }
+        return self.doc.hasPendingUpdates
+    }
+
     // MARK: Text operations
 
     func textInsert(

@@ -22,11 +22,12 @@ import Testing
             #expect(text.length(txn) == 3)
             // The embed is not a character: the plain string keeps only what was typed.
             #expect(text.string(txn) == "AB")
-            #expect(text.toDelta(txn) == [
-                .insert(.string("A"), attributes: nil),
-                .insert(.object(["block": .string("T_second")]), attributes: nil),
-                .insert(.string("B"), attributes: nil),
-            ])
+            #expect(
+                text.toDelta(txn) == [
+                    .insert(.string("A"), attributes: nil),
+                    .insert(.object(["block": .string("T_second")]), attributes: nil),
+                    .insert(.string("B"), attributes: nil),
+                ])
         }
     }
 
@@ -45,11 +46,12 @@ import Testing
         let replicated = replica.text("line")
         replica.transact { txn in
             #expect(replicated.string(txn) == "AlphaBeta")
-            #expect(replicated.toDelta(txn) == [
-                .insert(.string("Alpha"), attributes: nil),
-                .insert(.object(["block": .string("T_beta")]), attributes: nil),
-                .insert(.string("Beta"), attributes: nil),
-            ])
+            #expect(
+                replicated.toDelta(txn) == [
+                    .insert(.string("Alpha"), attributes: nil),
+                    .insert(.object(["block": .string("T_beta")]), attributes: nil),
+                    .insert(.string("Beta"), attributes: nil),
+                ])
         }
     }
 
@@ -77,11 +79,12 @@ import Testing
             text.insertEmbed(txn, at: 1, self.marker("T_second"))
         }
         doc.transact { txn in
-            #expect(text.toDelta(txn) == [
-                .insert(.string("A"), attributes: ["bold": .bool(true)]),
-                .insert(.object(["block": .string("T_second")]), attributes: ["bold": .bool(true)]),
-                .insert(.string("B"), attributes: ["bold": .bool(true)]),
-            ])
+            #expect(
+                text.toDelta(txn) == [
+                    .insert(.string("A"), attributes: ["bold": .bool(true)]),
+                    .insert(.object(["block": .string("T_second")]), attributes: ["bold": .bool(true)]),
+                    .insert(.string("B"), attributes: ["bold": .bool(true)]),
+                ])
         }
     }
 }

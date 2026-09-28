@@ -4,7 +4,8 @@
   "type": "module",
   "description": "Generates golden wire-format vectors from a pinned JS-Yjs for YSwift conformance tests.",
   "scripts": {
-    "generate": "node generate.mjs"
+    "generate": "node generate.mjs && npm run generate:undo",
+    "generate:undo": "node undo-fuzz.mjs --suite --out ../Tests/YSwiftTests/Fixtures/undo_fuzz_v13_6_31.json"
   },
   "dependencies": {
     "yjs": "13.6.31"

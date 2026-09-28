@@ -27,8 +27,9 @@ equivalent multi-attribute key-order case:
   multi-attribute key-order exception.
 
 Verification: golden vectors + concurrent convergence + a recorded randomised
-differential fuzz (text/array/map) + adversarial code review. The public surface
-is gated directly against Yjs fixtures and convergence scenarios.
+differential fuzz (text/array/map) + a recorded undo/redo differential corpus +
+adversarial code review. The public surface is gated directly against Yjs
+fixtures and convergence scenarios.
 
 ### Document-less update limits
 

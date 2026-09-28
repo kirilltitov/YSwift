@@ -30,6 +30,11 @@ remains the frozen contract established during the migration to native Swift.
 - **`Origin` is a `Sendable` value type** (wraps a `String`), not `Any` — so it
   is usable in `Set<Origin>` (undo tracked-origins) and crosses isolation safely.
 - **`captureTimeout: Duration`** (not a millisecond number) on `UndoManager`.
+- **`UndoManager` tracks only the origins it is given.** Yjs's default `trackedOrigins` is
+  `{null}` and it also matches an origin's constructor; a `Set<Origin>` can express neither, so
+  a transaction without an origin is never captured. What a captured step undoes or redoes —
+  which items are deleted or re-created, where, and in which order — is ported from Yjs 13.6.31
+  and checked byte for byte against it (`UndoFuzzTests`).
 - **`StateVector` is a distinct wrapper type** around `Data`, so an update and a
   state vector cannot be accidentally interchanged.
 

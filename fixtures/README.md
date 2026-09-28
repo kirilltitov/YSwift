@@ -13,7 +13,19 @@ npm ci          # or: npm install
 npm run generate
 ```
 
-Output: `Tests/YSwiftTests/Fixtures/golden_v13_6_31.json` (committed).
+Output: `Tests/YSwiftTests/Fixtures/golden_v13_6_31.json` and
+`Tests/YSwiftTests/Fixtures/undo_fuzz_v13_6_31.json` (both committed).
+
+`undo-fuzz.mjs` records undo/redo scenarios — minimised repros, audit scenarios and
+seeded random ones, including the sheets-api server shapes — step by step in Yjs;
+`UndoFuzzTests` replays them and compares every emitted update, state vector, text,
+delta and `canUndo`/`canRedo`. For a larger run, generate a corpus outside the repo and
+point the test at it:
+
+```sh
+node undo-fuzz.mjs --from 1000 --count 3000 --noformat --out /tmp/nf.json
+UNDO_FUZZ_FIXTURE=/tmp/nf.json swift test --filter UndoFuzz
+```
 
 ## Notes
 

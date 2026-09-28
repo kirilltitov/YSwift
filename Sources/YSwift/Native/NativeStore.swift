@@ -3,34 +3,41 @@
 // `utils/StructStore.js` (search / split / add) and the struct-splitting parts of
 // `utils/DeleteSet.js` (`readAndApplyDeleteSet`).
 
-/// Splits `left` at `diff`, returning the new right half. The two halves are linked
-/// into the sibling list; the caller is responsible for inserting the right half
-/// into the store array (mirrors yjs `splitItem`, minus merge/undo bookkeeping).
-private func splitItem(_ left: Item, _ diff: Int) -> Item {
-    let right = Item(
-        id: YID(client: left.id.client, clock: left.id.clock + UInt64(diff)),
-        origin: YID(client: left.id.client, clock: left.id.clock + UInt64(diff) - 1),
-        rightOrigin: left.rightOrigin,
-        parent: left.parent,
-        parentID: nil,
-        parentSub: left.parentSub,
-        content: left.content.splice(diff)
-    )
-    if left.deleted { right.markDeleted() }
-    right.left = left
-    right.right = left.right
-    (left.right as? Item)?.left = right
-    left.right = right
-    left.length = UInt64(diff)
-    if let parentSub = right.parentSub, right.right == nil {
-        right.parent?.map[parentSub] = right
-    }
-    return right
-}
-
 final class NativeStore {
     /// Per-client structs, clock-ascending. The sole strong owner of every struct.
     var clients: [UInt64: [Struct]] = [:]
+    /// Bumped on every item split, so a transaction that only split items still merges them back
+    /// on commit, as yjs does through `transaction._mergeStructs`.
+    private(set) var splitCount = 0
+
+    /// Splits `left` at `diff`, returning the new right half. The two halves are linked
+    /// into the sibling list; the caller is responsible for inserting the right half
+    /// into the store array (yjs `splitItem`, whose merge bookkeeping `splitCount` stands in for).
+    private func splitItem(_ left: Item, _ diff: Int) -> Item {
+        self.splitCount += 1
+        let right = Item(
+            id: YID(client: left.id.client, clock: left.id.clock + UInt64(diff)),
+            origin: YID(client: left.id.client, clock: left.id.clock + UInt64(diff) - 1),
+            rightOrigin: left.rightOrigin,
+            parent: left.parent,
+            parentID: nil,
+            parentSub: left.parentSub,
+            content: left.content.splice(diff)
+        )
+        if left.deleted { right.markDeleted() }
+        // An UndoManager's protection and redo link cover both halves.
+        if left.keep { right.setKeep(true) }
+        if let redone = left.redone { right.redone = YID(client: redone.client, clock: redone.clock + UInt64(diff)) }
+        right.left = left
+        right.right = left.right
+        (left.right as? Item)?.left = right
+        left.right = right
+        left.length = UInt64(diff)
+        if let parentSub = right.parentSub, right.right == nil {
+            right.parent?.map[parentSub] = right
+        }
+        return right
+    }
 
     /// When non-nil, `deleteItem` logs `(client, clock, length)` for the deletes made
     /// during the current transaction (used to build the emitted update's delete set).

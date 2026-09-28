@@ -55,6 +55,7 @@ final class NativeDoc {
     private var txnDepth = 0
     private var txnBeforeState: [UInt64: UInt64] = [:]
     private var txnStartIntegratedCount = 0
+    private var txnStartSplitCount = 0
     private var txnOrigin: Origin?
 
     /// Update handlers, behind their own lock so `removeUpdateHandler` (called from
@@ -109,6 +110,7 @@ final class NativeDoc {
         if self.txnDepth == 0 {
             self.txnBeforeState = self.store.snapshotState()
             self.txnStartIntegratedCount = self.store.integratedCount
+            self.txnStartSplitCount = self.store.splitCount
             self.store.deleteLog = []
             self.store.changedTypeNames = []
             self.store.changedRootNamesAreComplete = true
@@ -145,8 +147,10 @@ final class NativeDoc {
             for entry in self.afterTransactionHandlers { entry.handler(info) }
         }
 
-        // 3. Cleanup so the emitted update encodes the merged/GC'd store byte-exactly.
-        if mutated { self.store.cleanup(gc: self.gc) }
+        // 3. Cleanup so the emitted update encodes the merged/GC'd store byte-exactly. A transaction
+        //    that only split items (e.g. an undo that found nothing to change) merges them back too,
+        //    as yjs merges every transaction's `_mergeStructs`.
+        if mutated || self.store.splitCount != self.txnStartSplitCount { self.store.cleanup(gc: self.gc) }
         self.store.deleteLog = nil
         self.store.changedTypeNames = nil
         self.txnOrigin = nil

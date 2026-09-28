@@ -407,6 +407,12 @@ final class Item: Struct {
         if case .format = self.content {
             parent.hasFormatting = true  // disables search markers (attribute-safe)
         }
+        if case .deleted = self.content {
+            // ContentDeleted.integrate: the item arrives deleted and joins the transaction's delete
+            // set in integration order, which an UndoManager's redo order follows.
+            store.deleteLog?.append((self.id.client, self.id.clock, self.length))
+            self.markDeleted()
+        }
 
         if (parent.item?.deleted ?? false) || (self.parentSub != nil && self.right != nil) {
             store.deleteItem(self)

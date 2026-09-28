@@ -24,10 +24,14 @@ struct UndoFuzzSuite: Decodable {
 
     struct ManagerSpec: Decodable {
         let doc: Int
-        let root: String
+        /// One root (`new UndoManager(text)`) or several (`new UndoManager([a, b])`).
+        let root: String?
+        let roots: [String]?
         let origins: [String]
         let timeout: Int
         let late: Bool?
+
+        var scope: [String] { self.roots ?? [self.root!] }
     }
 
     struct Op: Decodable {
@@ -145,7 +149,7 @@ struct UndoFuzzReplayer {
 
     private func makeManager(_ spec: UndoFuzzSuite.ManagerSpec) -> YSwift.UndoManager {
         YSwift.UndoManager(
-            self.docs[spec.doc].text(spec.root),
+            spec.scope.map { self.docs[spec.doc].text($0) },
             trackedOrigins: Set(spec.origins.map { Origin($0) }),
             captureTimeout: .milliseconds(spec.timeout),
         )

@@ -12,11 +12,12 @@
 // minimiser) and the recorded ops are exactly what both sides execute.
 //
 // Usage: node undo-fuzz.mjs --suite --out ../Tests/YSwiftTests/Fixtures/undo_fuzz_v13_6_31.json
-//        node undo-fuzz.mjs [--from N] [--count N] [--noformat] [--singlekey] [--server] [--nested] [--out path]
+//        node undo-fuzz.mjs [--from N] [--count N] [--noformat] [--singlekey] [--server] [--nested] [--multiroot]
+//                           [--out path]
 // --noformat drops formatting attributes and format ops; --singlekey keeps one key per attribute
 // set; --server uses only the sheets-api-shaped template, whose browser document is a JS peer (the
-// Swift runner feeds its recorded bytes); --nested uses only the nested type template. A larger
-// corpus runs through UNDO_FUZZ_FIXTURE, e.g.
+// Swift runner feeds its recorded bytes); --nested uses only the nested type template; --multiroot
+// scopes every undo manager to several roots. A larger corpus runs through UNDO_FUZZ_FIXTURE, e.g.
 //   node undo-fuzz.mjs --from 1000 --count 3000 --noformat --out /tmp/nf.json
 //   UNDO_FUZZ_FIXTURE=/tmp/nf.json swift test --filter UndoFuzz
 
@@ -64,8 +65,10 @@ export class Sim {
     const spec = this.config.ums[i]
     const { doc } = this.docs[spec.doc]
     this.created.add(i)
-    // A fresh Set per manager: Yjs adds the manager itself to the set it is given.
-    this.ums[i] = new Y.UndoManager(doc.getText(spec.root), {
+    // A fresh Set per manager: Yjs adds the manager itself to the set it is given. `roots` scopes
+    // one manager to several roots (an array typeScope), `root` to one.
+    const scope = spec.roots ? spec.roots.map((root) => doc.getText(root)) : doc.getText(spec.root)
+    this.ums[i] = new Y.UndoManager(scope, {
       trackedOrigins: new Set(spec.origins),
       captureTimeout: spec.timeout,
     })
@@ -236,6 +239,13 @@ let SINGLEKEY = false
 export function setSingleKey(value) {
   SINGLEKEY = value
 }
+// --multiroot: every undo manager is scoped by a `roots` array (Yjs `new UndoManager([a, b])`): a
+// random subset of the roots in random order, sometimes with a duplicate; the server template uses
+// one manager over all roots per round instead of one per root.
+let MULTIROOT = false
+export function setMultiRoot(value) {
+  MULTIROOT = value
+}
 const pick = (rng, xs) => xs[Math.floor(rng() * xs.length)]
 const int = (rng, lo, hi) => lo + Math.floor(rng() * (hi - lo + 1))
 
@@ -297,6 +307,24 @@ function randOp(rng, sim, d, roots) {
   return o
 }
 
+/** Fisher-Yates, so the draws do not depend on the engine's sort. */
+function shuffle(rng, xs) {
+  const out = [...xs]
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = int(rng, 0, i)
+    ;[out[i], out[j]] = [out[j], out[i]]
+  }
+  return out
+}
+
+/** A non-empty subset of `roots` in random order, sometimes naming one root twice. */
+function randScope(rng, roots) {
+  const shuffled = shuffle(rng, roots)
+  const scope = shuffled.slice(0, int(rng, 1, roots.length))
+  if (rng() < 0.15) scope.push(pick(rng, scope))
+  return scope
+}
+
 function randClients(rng, n) {
   const ids = new Set()
   while (ids.size < n) ids.add(rng() < 0.5 ? int(rng, 1, 20) : int(rng, 1, 0xffffffff))
@@ -335,6 +363,10 @@ function randomScenario(seed) {
     for (let i = 0, n = d === 0 ? int(rng, 1, 3) : int(rng, 0, 2); i < n; i++) {
       const r = rng()
       const origins = r < 0.6 ? ['u'] : r < 0.75 ? ['v'] : ['u', 'v']
+      if (MULTIROOT) {
+        ums.push({ doc: d, roots: randScope(rng, roots), origins, timeout: rng() < 0.8 ? 0 : LONG_TIMEOUT })
+        continue
+      }
       ums.push({ doc: d, root: pick(rng, roots), origins, timeout: rng() < 0.8 ? 0 : LONG_TIMEOUT })
     }
   }
@@ -382,7 +414,7 @@ function randomScenario(seed) {
       push(sim, steps, { k: 'stop', um: int(rng, 0, ums.length - 1) })
     }
   }
-  return record(`${NOFORMAT ? 'nf' : SINGLEKEY ? 'sk' : ''}random_${seed}`, config, steps)
+  return record(`${MULTIROOT ? 'mr' : ''}${NOFORMAT ? 'nf' : SINGLEKEY ? 'sk' : ''}random_${seed}`, config, steps)
 }
 
 /**
@@ -391,6 +423,8 @@ function randomScenario(seed) {
  * per-root undo managers, undoes them in reverse order and redoes them forward
  * (PageTextHistoryReplay.derive), or replaces the roots locally and undoes that
  * (rebasedHistoryUpdates); the server's result flows back to the browser, which keeps editing.
+ * With --multiroot the server uses one manager over all roots per round instead, undone and
+ * redone once, as the browser builds the inverse of a gesture that spans several blocks.
  */
 function serverScenario(seed) {
   const rng = makeRng(seed)
@@ -404,10 +438,13 @@ function serverScenario(seed) {
   const ums = []
   const plan = []
   for (let round = 0; round < rounds; round++) {
-    const ids = roots.map((root) => {
-      ums.push({ doc: 1, root, origins: ['r'], timeout: 0, late: true })
-      return ums.length - 1
-    })
+    // --multiroot: one manager whose scope is every root, as the browser builds its inverses.
+    const ids = MULTIROOT
+      ? [ums.push({ doc: 1, roots: shuffle(rng, roots), origins: ['r'], timeout: 0, late: true }) - 1]
+      : roots.map((root) => {
+        ums.push({ doc: 1, root, origins: ['r'], timeout: 0, late: true })
+        return ums.length - 1
+      })
     plan.push({ ids, reseed: rng() < (HYDRATION ? 0.5 : 0.25) })
   }
   const config = { seed, docs, roots, ums }
@@ -466,7 +503,8 @@ function serverScenario(seed) {
       push(sim, steps, { k: 'sync', from: B, to: S, origin: null })
     }
   }
-  return record(`${NOFORMAT ? 'nf' : SINGLEKEY ? 'sk' : ''}${HYDRATION ? 'srv' : 'server'}_${seed}`, config, steps)
+  const prefix = `${MULTIROOT ? 'mr' : ''}${NOFORMAT ? 'nf' : SINGLEKEY ? 'sk' : ''}`
+  return record(`${prefix}${HYDRATION ? 'srv' : 'server'}_${seed}`, config, steps)
 }
 
 // --server: every seed uses the sheets-api server template, with more PageHydration reseeds.
@@ -970,6 +1008,105 @@ for (const [c1, c2] of [[1, 2], [2, 1], [3, 7], [7, 3], [11, 5], [5, 11], [100, 
   }
 }
 
+// One manager over several roots (Yjs `new UndoManager([A, B])`), the way sheets-web builds the
+// inverse of a gesture that touches several blocks: a transaction is captured when it changes any
+// root of the scope, and one undo or redo restores every root in one transaction.
+const umr = (roots, timeout = 0, doc = 0) => ({ doc, roots, origins: ['o'], timeout })
+const late = (spec) => ({ ...spec, late: true })
+const newum = (um) => ({ k: 'newum', um })
+const etIn = (root, index, kind) => ({ op: 'embedtype', root, index, kind })
+const nsetIn = (root, nth, set, value, path) => ({ op: 'nested', root, nth, set, value, ...(path ? { path } : {}) })
+const npushIn = (root, nth, push) => ({ op: 'nested', root, nth, push })
+const S5_STEPS = [tx(0, null, ins('A', 0, 'aa')), tx(0, null, ins('B', 0, 'bb'))]
+const SCOPE = {
+  // The audit_s5 transactions under one manager over both roots: one step, one undo, one redo.
+  scope_s5_two_roots: {
+    docs: one(), roots: ['A', 'B'], ums: [umr(['A', 'B'])],
+    steps: [...S5_STEPS, tx(0, 'o', ins('A', 1, 'X'), del('B', 0, 1)), undo(0), redo(0), undo(0)],
+  },
+  scope_s5b_two_roots_deletions: {
+    docs: one(), roots: ['A', 'B'], ums: [umr(['A', 'B'])],
+    steps: [...S5_STEPS, tx(0, 'o', del('A', 0, 1), del('B', 0, 1)), undo(0), redo(0), undo(0)],
+  },
+  scope_s5c_two_roots_insertions: {
+    docs: one(), roots: ['A', 'B'], ums: [umr(['A', 'B'])],
+    steps: [...S5_STEPS, tx(0, 'o', ins('A', 1, 'X'), ins('B', 1, 'Y')), undo(0), redo(0), undo(0)],
+  },
+  // The order of the scope and a root named twice change nothing (addToScope keeps a set).
+  scope_order_and_duplicates: {
+    docs: one(), roots: ['A', 'B'], ums: [umr(['B', 'A', 'B'])],
+    steps: [...S5_STEPS, tx(0, 'o', ins('A', 1, 'X'), del('B', 0, 1)), undo(0), redo(0)],
+  },
+  // A root of the scope the step does not touch, and a third root outside the scope.
+  scope_untouched_and_outside_roots: {
+    docs: one(), roots: ['A', 'B', 'C'], ums: [umr(['A', 'B'])],
+    steps: [tx(0, null, ins('A', 0, 'aa'), ins('C', 0, 'cc')), tx(0, 'o', ins('A', 1, 'X'), del('C', 0, 1)), undo(0),
+      tx(0, 'o', ins('C', 0, 'Z')), undo(0), redo(0)],
+  },
+  // Enter in the middle of a block: the tail moves from A into an empty B, and back on undo.
+  scope_split_moves_text_to_second_root: {
+    docs: one(), roots: ['A', 'B'], ums: [umr(['A', 'B'])],
+    steps: [tx(0, null, ins('A', 0, 'hello world')), tx(0, 'o', del('A', 5, 6), ins('B', 0, ' world')), undo(0), redo(0),
+      undo(0)],
+  },
+  // Backspace at the start of B: its text is appended to A and B is emptied.
+  scope_merge_moves_text_to_first_root: {
+    docs: one(), roots: ['A', 'B'], ums: [umr(['A', 'B'])],
+    steps: [tx(0, null, ins('A', 0, 'ab'), ins('B', 0, 'cd', { bold: true })),
+      tx(0, 'o', ins('A', 2, 'cd', { bold: true }), del('B', 0, 2)), undo(0), redo(0), undo(0)],
+  },
+  // The sheets-api shape: a browser (Yjs peer) splits and later merges two blocks, the server
+  // applies each change under a tracked origin through a fresh manager over both roots, undoes it
+  // once and redoes it once (PageTextHistoryReplay.derive), and the browser receives the result.
+  scope_server_split_then_merge: {
+    docs: [peer(1), server], roots: ['A', 'B'], ums: [late(umr(['A', 'B'], 0, 1)), late(umr(['B', 'A'], 0, 1))],
+    steps: [tx(0, 'b', ins('A', 0, 'hello world')), sync(0, 1), newum(0), tx(0, 'b', del('A', 5, 6), ins('B', 0, ' world')),
+      sync(0, 1, 'o'), undo(0), redo(0), sync(1, 0), newum(1), tx(0, 'b', ins('A', 5, ' world'), del('B', 0, 6)),
+      sync(0, 1, 'o'), undo(1), redo(1), undo(1), sync(1, 0)],
+  },
+  // An untracked edit lands in one root of the scope between tracked steps (and inside a merged
+  // step): undo leaves it alone and re-creates around it.
+  scope_untracked_edit_in_scope_root: {
+    docs: one(), roots: ['A', 'B'], ums: [umr(['A', 'B'])],
+    steps: [...S5_STEPS, tx(0, 'o', ins('A', 1, 'X'), del('B', 1, 1)), tx(0, 'x', ins('B', 0, 'yy'), ins('A', 0, 'q')),
+      tx(0, 'o', del('B', 0, 2), ins('A', 3, 'Z')), tx(0, 'x', del('A', 0, 1)), undo(0), undo(0), redo(0), redo(0)],
+  },
+  scope_untracked_edit_inside_merged_step: {
+    docs: one(), roots: ['A', 'B'], ums: [umr(['A', 'B'], LONG_TIMEOUT)],
+    steps: [...S5_STEPS, tx(0, 'o', ins('A', 1, 'X')), tx(0, 'x', ins('B', 1, 'yy')), tx(0, 'o', del('B', 0, 2)),
+      tx(0, 'o', ins('A', 0, 'W'), ins('B', 0, 'V')), undo(0), redo(0)],
+  },
+  // A tracked update that also changes a root outside the scope (the sheets-api "unknown root"):
+  // with the root in the scope the whole transaction is inverted, without it only the scope.
+  scope_tracked_update_with_extra_root: {
+    docs: [peer(1), server], roots: ['A', 'H'], ums: [late(umr(['A', 'H'], 0, 1)), late(umr(['A'], 0, 1))],
+    steps: [tx(0, 'b', ins('A', 0, 'ab'), ins('H', 0, 'hidden')), sync(0, 1), newum(0), newum(1),
+      tx(0, 'b', ins('A', 1, 'X'), del('H', 1, 5)), sync(0, 1, 'o'), undo(1), undo(0), redo(0), redo(1)],
+  },
+  // A concurrent remote edit next to a tracked change in the other root of the scope.
+  scope_remote_edit_in_scope_root: {
+    docs: [...one(1), ...one(2)], roots: ['A', 'B'], ums: [umr(['A', 'B'])],
+    steps: [...S5_STEPS, sync(0, 1), tx(0, 'o', ins('A', 1, 'X'), del('B', 0, 1)), sync(0, 1), tx(1, null, ins('B', 1, 'R')),
+      sync(1, 0), undo(0), sync(0, 1), redo(0), undo(0)],
+  },
+  // Types nested in two roots of the scope (from a Yjs peer): a step that changes only nested
+  // types is captured, a nested change under a root outside the scope is not, and deleting the
+  // embedded types in both roots is undone with their children re-created in the copies.
+  scope_nested_types_in_two_roots: {
+    docs: [peer(1), server], roots: ['t', 'u', 'v'], ums: [umr(['t', 'u'], 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), etIn('t', 1, 'map'), ins('u', 0, 'cd'), etIn('u', 1, 'array'), etIn('v', 0, 'map')),
+      tx(0, 'b', nsetIn('t', 0, 'k', 'v1'), npushIn('u', 0, 'x'), npushIn('u', 0, 'map')), sync(0, 1),
+      tx(0, 'b', nsetIn('v', 0, 'k', 'w')), sync(0, 1, 'o'),
+      tx(0, 'b', nsetIn('t', 0, 'k', 'v2'), nsetIn('u', 0, 'deep', 1, [1])), sync(0, 1, 'o'), undo(0), redo(0),
+      tx(0, 'b', del('t', 1, 1), del('u', 1, 1)), sync(0, 1, 'o'), undo(0), redo(0), undo(0)],
+  },
+}
+
+// Seeds whose recording hits a YText gap outside undo/redo: after a remote transaction Yjs deletes
+// the formatting it made redundant (cleanupYTextAfterTransaction, a follow-up update of its own),
+// which YSwift does not port. The --server --singlekey seeds of the single-root corpus hit it too.
+const TEXT_CLEANUP_GAP = new Set(['mrsksrv_21'])
+
 export function suite(scenarios) {
   return { meta: { yjsVersion: YJS_VERSION, format: 'v1', generatedBy: 'undo-fuzz.mjs' }, scenarios }
 }
@@ -985,13 +1122,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (process.argv.includes('--noformat')) setNoFormat(true)
   if (process.argv.includes('--server')) setServerOnly(true)
   if (process.argv.includes('--singlekey')) setSingleKey(true)
+  if (process.argv.includes('--multiroot')) setMultiRoot(true)
   const scenarios = []
   if (process.argv.includes('--suite')) {
     // The committed regression corpus. Minimised repros and the audit scenarios first, one per
     // undo/redo divergence of YSwift 0.4.0 (see REPROS and AUDIT above), then the merged map entry
-    // scenarios (MERGED_ENTRY), then the transaction cleanup scenarios (CLEANUP), then seeded scenarios.
+    // scenarios (MERGED_ENTRY), then the transaction cleanup scenarios (CLEANUP), then the multi-root
+    // scope scenarios (SCOPE), then seeded scenarios.
     const named = [...Object.entries(REPROS), ...Object.entries(AUDIT), ...Object.entries(MERGED_ENTRY),
-      ...Object.entries(CLEANUP)]
+      ...Object.entries(CLEANUP), ...Object.entries(SCOPE)]
     for (const [name, spec] of named) {
       const config = { seed: 0, docs: spec.docs, roots: spec.roots, ums: spec.ums, ...(spec.nodelta ? { nodelta: true } : {}) }
       scenarios.push(record(name, config, spec.steps))
@@ -1006,6 +1145,21 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     for (let seed = 1; seed <= 60; seed++) scenarios.push(scenario(seed))
     // Nested types with out-of-order delivery: two seeds that crashed YSwift in the cleanup.
     for (const seed of [101860, 102498]) scenarios.push(nestedScenario(seed))
+    // Multi-root scopes: random subsets of the roots, and the server template with one manager
+    // over every root.
+    setMultiRoot(true)
+    setSingleKey(false)
+    setNoFormat(true)
+    setServerOnly(false)
+    for (let seed = 1; seed <= 80; seed++) scenarios.push(scenario(seed))
+    setServerOnly(true)
+    for (let seed = 1; seed <= 40; seed++) scenarios.push(scenario(seed))
+    setNoFormat(false)
+    setSingleKey(true)
+    for (let seed = 1; seed <= 40; seed++) {
+      const recorded = scenario(seed)
+      if (!TEXT_CLEANUP_GAP.has(recorded.name)) scenarios.push(recorded)
+    }
   } else {
     const make = process.argv.includes('--nested') ? nestedScenario : scenario
     for (let seed = from; seed < from + count; seed++) scenarios.push(make(seed))

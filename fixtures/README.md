@@ -17,7 +17,8 @@ Output: `Tests/YSwiftTests/Fixtures/golden_v13_6_31.json` and
 `Tests/YSwiftTests/Fixtures/undo_fuzz_v13_6_31.json` (both committed).
 
 `undo-fuzz.mjs` records undo/redo scenarios — minimised repros, audit scenarios and
-seeded random ones, including the sheets-api server shapes — step by step in Yjs;
+seeded random ones, including the sheets-api server shapes and managers scoped to several
+roots (`new UndoManager([a, b])`, `--multiroot`) — step by step in Yjs;
 `UndoFuzzTests` replays them and compares every emitted update, state vector, text,
 delta and `canUndo`/`canRedo`. For a larger run, generate a corpus outside the repo and
 point the test at it:

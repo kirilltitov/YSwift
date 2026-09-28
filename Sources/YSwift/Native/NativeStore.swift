@@ -73,6 +73,18 @@ final class NativeStore {
         self.deleteLog?.append((item.id.client, item.id.clock, item.length))
         if let name = item.parent?.name { self.changedTypeNames?.insert(name) }
         self.checkChangedRootCompleteness(of: item)
+        // `ContentType.delete`: a deleted type deletes its children, the list first, then the
+        // current value of every key in the order the keys were first set.
+        if case .type(let type, _, _) = item.content {
+            var child = type.start
+            while let current = child {
+                self.deleteItem(current)
+                child = current.right as? Item
+            }
+            for key in type.mapKeys {
+                if let value = type.map[key] { self.deleteItem(value) }
+            }
+        }
     }
 
     /// Next expected clock for `client` (0 if unseen).
@@ -221,6 +233,7 @@ final class NativeStore {
                 }
             }
             type.map = [:]
+            type.mapKeys = []
         }
         if parentGCd {
             // `replaceStruct`

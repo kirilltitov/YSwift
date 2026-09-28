@@ -392,6 +392,7 @@ final class Item: Struct {
         if let rightItem = self.right as? Item {
             rightItem.left = self
         } else if let parentSub {
+            if parent.map[parentSub] == nil { parent.mapKeys.append(parentSub) }
             parent.map[parentSub] = self
             if let leftItem = self.left as? Item { store.deleteItem(leftItem) }
         }
@@ -490,6 +491,8 @@ final class Item: Struct {
 final class YTypeImpl {
     weak var start: Item?
     var map: [String: Item] = [:]
+    /// The keys of `map` in the order they were first set: the iteration order of the yjs `_map`.
+    var mapKeys: [String] = []
     var length: Int = 0
     weak var item: Item?
     let name: String?

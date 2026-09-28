@@ -663,6 +663,38 @@ const AUDIT = {
     steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'k', 'v1'), ins('t', 0, 'z')),
       sync(0, 1, 'o'), tx(0, 'b', del('t', 2, 1)), sync(0, 1), undo(0), redo(0)],
   },
+  // Deleting a type deletes its children (ContentType.delete), including ones that arrived after the
+  // step that inserted it: undo removes them with the type and redo re-creates them in its copy.
+  audit_nested_undo_deletes_map_children: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab')), sync(0, 1), tx(0, 'b', et(1, 'map')), sync(0, 1, 'o'),
+      tx(0, 'b', nset(0, 'k', 'v')), sync(0, 1), undo(0), redo(0)],
+  },
+  audit_nested_undo_deletes_array_children: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab')), sync(0, 1), tx(0, 'b', et(1, 'array')), sync(0, 1, 'o'),
+      tx(0, 'b', npush(0, 'x'), npush(0, 'y')), sync(0, 1), undo(0), redo(0)],
+  },
+  // Map values are deleted in the order their keys were first set (the _map order). With values of
+  // three clients that decides the client order of the delete set, and with it the redo clocks.
+  audit_nested_undo_deletes_map_keys_in_key_order: {
+    docs: [peer(1), peer(2), peer(3), peer(4), server], roots: ['t'], ums: [um('t', 0, 4)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab')), sync(0, 4), tx(0, 'b', et(1, 'map')), sync(0, 4, 'o'), sync(4, 1), sync(4, 2),
+      sync(4, 3), tx(3, 'b', nset(0, 'q', 1)), sync(3, 4), tx(1, 'b', nset(0, 'a', 1)), sync(1, 4),
+      tx(2, 'b', nset(0, 'm', 1)), sync(2, 4), tx(3, 'b', nset(0, 'c', 1)), sync(3, 4), undo(0), redo(0), undo(0)],
+  },
+  // Outside undo: the server deleting an embedded map, and a remote delete of a map that lands
+  // after a concurrent key, delete the children too.
+  audit_nested_local_delete_deletes_children: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), tx(0, 'b', nset(0, 'k', 'v')), sync(0, 1),
+      tx(1, null, del('t', 1, 1)), sync(1, 0)],
+  },
+  audit_nested_remote_delete_covers_concurrent_key: {
+    docs: [peer(1), peer(2), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), sync(0, 2), sync(2, 1), tx(1, 'b', nset(0, 'k', 'v')),
+      sync(1, 2), tx(0, 'b', del('t', 1, 1)), sync(0, 2), sync(2, 0), sync(2, 1)],
+  },
   // A key set in a type the server has deleted changes no type Yjs reports: nothing is captured.
   audit_nested_update_in_deleted_type_untracked: {
     docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,

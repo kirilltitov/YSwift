@@ -43,6 +43,29 @@ struct EngineBehaviorTests {
         #expect(doc.transact { txn in text.string(txn) } == "x")
     }
 
+    @Test("UndoManager over several texts undoes a change to all of them in one update")
+    func undoAcrossTexts() {
+        let doc = YDoc(clientID: 1)
+        let first = doc.text("first")
+        let second = doc.text("second")
+        doc.transact { txn in first.insert(txn, at: 0, "hello world") }
+        let undo = YSwift.UndoManager([first, second], trackedOrigins: ["user"])
+        let updates = Mutex(0)
+        let subscription = doc.onUpdate { _, _ in updates.withLock { $0 += 1 } }
+        defer { subscription.cancel() }
+
+        // A split moves the tail of one text into the other.
+        doc.transact(origin: "user") { txn in
+            first.delete(txn, at: 5, length: 6)
+            second.insert(txn, at: 0, " world")
+        }
+        undo.undo()
+        #expect(doc.transact { txn in [first.string(txn), second.string(txn)] } == ["hello world", ""])
+        undo.redo()
+        #expect(doc.transact { txn in [first.string(txn), second.string(txn)] } == ["hello", " world"])
+        #expect(updates.withLock { $0 } == 3)
+    }
+
     @Test("Awareness syncs local state between peers")
     func awarenessSync() {
         let docA = YDoc(clientID: 1)

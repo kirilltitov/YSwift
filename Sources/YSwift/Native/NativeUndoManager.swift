@@ -4,7 +4,8 @@
 // re-creates what was deleted, redo does the inverse. Deleted items are `keep`-ed
 // so the GC preserves their content for re-creation.
 //
-// The scope is one root text type and the types nested in it. Stack items are yjs `DeleteSet`s and are walked like
+// The scope is a set of root text types and the types nested in them (yjs `scope`, an array of
+// types). Stack items are yjs `DeleteSet`s and are walked like
 // `iterateDeletedStructs`, so the order in which items are re-created — and with it the clocks
 // and bytes of every undo/redo — follows yjs.
 
@@ -68,7 +69,11 @@ final class NativeUndoManager {
     }
 
     private let doc: NativeDoc
-    private let typeName: String
+    /// The scope's root names, for the capture check against `changedParentRootNames`.
+    private let scopeNames: Set<String>
+    /// The scope's root types, for the item check. A root is never replaced in `NativeDoc.share`,
+    /// so its identity is stable for the manager's lifetime.
+    private let scopeRoots: Set<ObjectIdentifier>
     private let trackedOrigins: Set<Origin>
     private let captureTimeout: Duration
     private let managerOrigin: Origin
@@ -82,13 +87,15 @@ final class NativeUndoManager {
 
     private static let counter = Mutex(0)
 
-    init(doc: NativeDoc, typeName: String, trackedOrigins: Set<Origin>, captureTimeoutMillis: UInt64) {
+    /// `scopeNames` must not be empty; a name listed twice counts once (`addToScope`).
+    init(doc: NativeDoc, scopeNames: [String], trackedOrigins: Set<Origin>, captureTimeoutMillis: UInt64) {
         let uid = Self.counter.withLock { count -> Int in
             count += 1
             return count
         }
         self.doc = doc
-        self.typeName = typeName
+        self.scopeNames = Set(scopeNames)
+        self.scopeRoots = Set(scopeNames.map { ObjectIdentifier(doc.get($0)) })
         self.managerOrigin = Origin("__undo_manager_\(uid)")
         // The manager's own undo/redo transactions must be tracked so their inverse
         // is captured onto the opposite stack.
@@ -123,7 +130,8 @@ final class NativeUndoManager {
     // MARK: Capture
 
     private func capture(_ info: NativeDoc.TransactionInfo) {
-        guard info.changedParentRootNames.contains(self.typeName) else { return }
+        // `scope.some(type => transaction.changedParentTypes.has(type))`.
+        guard !self.scopeNames.isDisjoint(with: info.changedParentRootNames) else { return }
         guard let origin = info.origin, self.trackedOrigins.contains(origin) else { return }
 
         if self.undoing {
@@ -260,25 +268,26 @@ final class NativeUndoManager {
         }
     }
 
-    /// Scope check (`isParentOf(scope, item)`): the item lives in this manager's text or in a type
-    /// nested inside it. `known` keeps the answer for every type climbed through, so that the items of
-    /// one walk climb the nesting they share once rather than once each: deeply nested items made each
-    /// walk quadratic.
+    /// Scope check (`scope.some(type => isParentOf(type, item))`): the item lives in one of this
+    /// manager's texts or in a type nested inside one. Every scope type is a root, so `isParentOf`
+    /// holds for one of them exactly when the item's topmost type is in the scope. `known` keeps the
+    /// answer for every type climbed through, so that the items of one walk climb the nesting they
+    /// share once rather than once each: deeply nested items made each walk quadratic.
     private func isInScope(_ item: Item, _ known: inout [ObjectIdentifier: Bool]) -> Bool {
-        let scope = self.doc.get(self.typeName)
         var climbed: [ObjectIdentifier] = []
         var type = item.parent
         var inScope = false
         while let current = type {
-            if current === scope {
+            let id = ObjectIdentifier(current)
+            if self.scopeRoots.contains(id) {
                 inScope = true
                 break
             }
-            if let answer = known[ObjectIdentifier(current)] {
+            if let answer = known[id] {
                 inScope = answer
                 break
             }
-            climbed.append(ObjectIdentifier(current))
+            climbed.append(id)
             type = current.item?.parent
         }
         for id in climbed { known[id] = inScope }

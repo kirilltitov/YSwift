@@ -47,7 +47,7 @@ protocol YEngine: AnyObject, Sendable {
         expectedAssoc: StickyIndex.Assoc?,
     ) -> Int?
 
-    func makeUndoManager(_ handle: TextHandle, trackedOrigins: Set<Origin>, captureTimeoutMillis: UInt64) -> AnyObject?
+    func makeUndoManager(_ scope: [TextHandle], trackedOrigins: Set<Origin>, captureTimeoutMillis: UInt64) -> AnyObject?
     func undoManagerUndo(_ mgr: AnyObject) -> Bool
     func undoManagerRedo(_ mgr: AnyObject) -> Bool
     func undoManagerCanUndo(_ mgr: AnyObject) -> Bool

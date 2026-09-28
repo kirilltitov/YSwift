@@ -35,6 +35,14 @@ remains the frozen contract established during the migration to native Swift.
   a transaction without an origin is never captured. What a captured step undoes or redoes —
   which items are deleted or re-created, where, and in which order — is ported from Yjs 13.6.31
   and checked byte for byte against it (`UndoFuzzTests`).
+- **`UndoManager` scope: one text or an array of texts of one document**, the `typeScope` forms
+  of a Yjs `UndoManager` that a text-first API needs. A transaction is captured when it changes
+  any text of the scope, and one `undo`/`redo` restores all of them in one transaction, as Yjs
+  does. A change spanning several texts must be inverted by one manager over all of them: one
+  manager per text sees only its own part and writes it in a separate transaction, so neither
+  the bytes nor the number of updates match what a Yjs peer with the combined scope produces.
+  A document as the scope, non-text types in the scope and `addToScope` are not provided: no
+  consumer needs them, and a caller that knows the texts before the change passes them all.
 - **`StateVector` is a distinct wrapper type** around `Data`, so an update and a
   state vector cannot be accidentally interchanged.
 

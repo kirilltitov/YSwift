@@ -165,11 +165,10 @@ final class NativeEngine: YEngine, @unchecked Sendable {
 
     // MARK: Undo manager & awareness
 
-    func makeUndoManager(_ handle: TextHandle, trackedOrigins: Set<Origin>, captureTimeoutMillis: UInt64) -> AnyObject?
+    func makeUndoManager(_ scope: [TextHandle], trackedOrigins: Set<Origin>, captureTimeoutMillis: UInt64) -> AnyObject?
     {
-        _ = self.doc.get(handle.name)
-        return NativeUndoManager(
-            doc: self.doc, typeName: handle.name, trackedOrigins: trackedOrigins,
+        NativeUndoManager(
+            doc: self.doc, scopeNames: scope.map(\.name), trackedOrigins: trackedOrigins,
             captureTimeoutMillis: captureTimeoutMillis)
     }
     func undoManagerUndo(_ mgr: AnyObject) -> Bool { (mgr as? NativeUndoManager)?.undo() ?? false }

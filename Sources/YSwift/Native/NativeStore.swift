@@ -6,6 +6,10 @@
 final class NativeStore {
     /// Per-client structs, clock-ascending. The sole strong owner of every struct.
     var clients: [UInt64: [Struct]] = [:]
+    /// Clients in the order their first struct arrived: the iteration order of the yjs
+    /// `store.clients` Map, which `getStateVector` (and so an UndoManager's insertions) follows.
+    private(set) var clientOrder: [UInt64] = []
+
     /// Bumped on every item split, so a transaction that only split items still merges them back
     /// on commit, as yjs does through `transaction._mergeStructs`.
     private(set) var splitCount = 0
@@ -93,6 +97,7 @@ final class NativeStore {
     private(set) var version = 0
 
     func addStruct(_ struct: Struct) {
+        if clients[`struct`.id.client] == nil { self.clientOrder.append(`struct`.id.client) }
         clients[`struct`.id.client, default: []].append(`struct`)
         self.integratedCount += 1
         self.version += 1
@@ -154,6 +159,19 @@ final class NativeStore {
             return structs[index + 1]
         }
         return s
+    }
+
+    /// Index of the struct starting at `clock` in `client`'s array, splitting the item covering it
+    /// if needed (`findIndexCleanStart`).
+    func findIndexCleanStart(_ client: UInt64, _ clock: UInt64) -> Int {
+        var structs = clients[client]!
+        let index = self.findIndex(structs, clock)
+        if structs[index].id.clock < clock, let item = structs[index] as? Item {
+            structs.insert(splitItem(item, Int(clock - item.id.clock)), at: index + 1)
+            clients[client] = structs
+            return index + 1
+        }
+        return index
     }
 
     /// Snapshot of `client -> next clock` for every known client.

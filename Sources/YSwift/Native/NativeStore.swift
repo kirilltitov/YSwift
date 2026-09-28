@@ -235,11 +235,15 @@ final class NativeStore {
     }
 
     private func garbageCollect(_ client: UInt64) {
-        guard let count = clients[client]?.count else { return }
-        // Collecting a type replaces its children in the store, so every struct is read afresh.
-        for index in 0..<count {
-            guard let item = clients[client]![index] as? Item, item.deleted, !item.keep else { continue }
+        guard let structs = clients[client] else { return }
+        // One load per struct from a snapshot. Collecting a type replaces its children with GC
+        // structs in place (the count never changes), so from then on structs are read afresh.
+        var collectedType = false
+        for index in structs.indices {
+            let s = collectedType ? clients[client]![index] : structs[index]
+            guard let item = s as? Item, item.deleted, !item.keep else { continue }
             if case .deleted = item.content { continue }
+            if case .type = item.content { collectedType = true }
             self.collect(item, parentGCd: false)
         }
     }

@@ -523,16 +523,20 @@ final class NativeDoc {
             var ranges: [(clock: UInt64, length: UInt64)] = []
             var index = 0
             while index < structs.count {
-                // GC structs count as deleted too (`GC.deleted`).
-                guard structs[index].isDeleted else {
+                // GC structs count as deleted too (`GC.deleted`). One load per struct keeps this
+                // whole-store walk to a single retain per struct.
+                let first = structs[index]
+                guard first.isDeleted else {
                     index += 1
                     continue
                 }
-                let clock = structs[index].id.clock
-                var length = structs[index].length
+                let clock = first.id.clock
+                var length = first.length
                 var next = index + 1
-                while next < structs.count, structs[next].isDeleted {
-                    length += structs[next].length
+                while next < structs.count {
+                    let following = structs[next]
+                    guard following.isDeleted else { break }
+                    length += following.length
                     next += 1
                 }
                 ranges.append((clock, length))

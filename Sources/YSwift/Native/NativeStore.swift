@@ -54,6 +54,32 @@ final class NativeStore {
     /// types. Keep observer behavior intact and fail closed for that validation path.
     var changedRootNamesAreComplete = true
 
+    /// When non-nil, the types changed during the current transaction, recorded under the rule of
+    /// yjs `addChangedTypeToTransaction`: a nested type counts only if its item existed before the
+    /// transaction (`transactionBeforeState`) and is not deleted.
+    var changedTypes: [ObjectIdentifier: YTypeImpl]?
+    var transactionBeforeState: [UInt64: UInt64] = [:]
+
+    private func addChangedType(_ type: YTypeImpl?) {
+        guard self.changedTypes != nil, let type else { return }
+        if let item = type.item, item.deleted || item.id.clock >= self.transactionBeforeState[item.id.client] ?? 0 {
+            return
+        }
+        self.changedTypes?[ObjectIdentifier(type)] = type
+    }
+
+    /// The root names in yjs `transaction.changedParentTypes`: every changed type whose item is not
+    /// deleted by the end of the transaction reports itself and each type above it.
+    func changedParentRootNames() -> Set<String> {
+        var names = Set<String>()
+        for type in (self.changedTypes ?? [:]).values where !(type.item?.deleted ?? false) {
+            var current = type
+            while let parent = current.item?.parent { current = parent }
+            if current.item == nil, let name = current.name { names.insert(name) }
+        }
+        return names
+    }
+
     private func checkChangedRootCompleteness(of item: Item) {
         guard let parent = item.parent, parent.item == nil, parent.name != nil else {
             self.changedRootNamesAreComplete = false
@@ -72,6 +98,7 @@ final class NativeStore {
         self.version += 1
         self.deleteLog?.append((item.id.client, item.id.clock, item.length))
         if let name = item.parent?.name { self.changedTypeNames?.insert(name) }
+        self.addChangedType(item.parent)
         self.checkChangedRootCompleteness(of: item)
         // `ContentType.delete`: a deleted type deletes its children, the list first, then the
         // current value of every key in the order the keys were first set.
@@ -114,7 +141,10 @@ final class NativeStore {
         self.integratedCount += 1
         self.version += 1
         if let name = (`struct` as? Item)?.parent?.name { self.changedTypeNames?.insert(name) }
-        if let item = `struct` as? Item { self.checkChangedRootCompleteness(of: item) }
+        if let item = `struct` as? Item {
+            self.addChangedType(item.parent)
+            self.checkChangedRootCompleteness(of: item)
+        }
     }
 
     /// Binary search for the struct covering `clock` (ported from `findIndexSS`,

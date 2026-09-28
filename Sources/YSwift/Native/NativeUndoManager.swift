@@ -123,7 +123,7 @@ final class NativeUndoManager {
     // MARK: Capture
 
     private func capture(_ info: NativeDoc.TransactionInfo) {
-        guard info.changedNames.contains(self.typeName) else { return }
+        guard info.changedParentRootNames.contains(self.typeName) else { return }
         guard let origin = info.origin, self.trackedOrigins.contains(origin) else { return }
 
         if self.undoing {

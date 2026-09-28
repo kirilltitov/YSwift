@@ -113,6 +113,8 @@ final class NativeDoc {
             self.txnStartSplitCount = self.store.splitCount
             self.store.deleteLog = []
             self.store.changedTypeNames = []
+            self.store.changedTypes = [:]
+            self.store.transactionBeforeState = self.txnBeforeState
             self.store.changedRootNamesAreComplete = true
             self.txnOrigin = origin
         }
@@ -143,7 +145,8 @@ final class NativeDoc {
         if mutated, !self.afterTransactionHandlers.isEmpty {
             let info = TransactionInfo(
                 beforeState: beforeState, afterState: self.store.snapshotState(),
-                deletes: deletes, changedNames: changed, origin: origin)
+                deletes: deletes, changedNames: changed,
+                changedParentRootNames: self.store.changedParentRootNames(), origin: origin)
             for entry in self.afterTransactionHandlers { entry.handler(info) }
         }
 
@@ -153,6 +156,7 @@ final class NativeDoc {
         if mutated || self.store.splitCount != self.txnStartSplitCount { self.store.cleanup(gc: self.gc) }
         self.store.deleteLog = nil
         self.store.changedTypeNames = nil
+        self.store.changedTypes = nil
         self.txnOrigin = nil
 
         // 4. Emit the incremental update to onUpdate handlers.
@@ -169,6 +173,9 @@ final class NativeDoc {
         let afterState: [UInt64: UInt64]
         let deletes: [(client: UInt64, clock: UInt64, length: UInt64)]
         let changedNames: Set<String>
+        /// The roots in yjs `transaction.changedParentTypes`: changed directly or through a type
+        /// nested in them.
+        let changedParentRootNames: Set<String>
         let origin: Origin?
     }
     private var afterTransactionHandlers: [(id: Int, handler: (TransactionInfo) -> Void)] = []

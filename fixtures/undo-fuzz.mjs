@@ -695,6 +695,23 @@ const AUDIT = {
     steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), sync(0, 2), sync(2, 1), tx(1, 'b', nset(0, 'k', 'v')),
       sync(1, 2), tx(0, 'b', del('t', 1, 1)), sync(0, 2), sync(2, 0), sync(2, 1)],
   },
+  // A tracked step that changes only a type nested in the text is captured: Yjs checks the scope
+  // against transaction.changedParentTypes, where a change reports every type above it.
+  audit_nested_only_tracked_update: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), tx(0, 'b', nset(0, 'k', 'v1')), sync(0, 1),
+      tx(0, 'b', nset(0, 'k', 'v2')), sync(0, 1, 'o'), undo(0), redo(0)],
+  },
+  audit_nested_array_push_tracked: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'array')), sync(0, 1), tx(0, 'b', npush(0, 'x')), sync(0, 1, 'o'),
+      undo(0), redo(0)],
+  },
+  audit_nested_deep_update_tracked: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'array')), tx(0, 'b', npush(0, 'map')), sync(0, 1),
+      tx(0, 'b', nset(0, 'deep', 1, [0])), sync(0, 1, 'o'), undo(0), redo(0)],
+  },
   // A key set in a type the server has deleted changes no type Yjs reports: nothing is captured.
   audit_nested_update_in_deleted_type_untracked: {
     docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,

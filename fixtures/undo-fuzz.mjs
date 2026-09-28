@@ -504,6 +504,12 @@ const undo = (um) => ({ k: 'undo', um })
 const redo = (um) => ({ k: 'redo', um })
 const one = (client = 1) => [{ client, gc: true }]
 const um = (root, timeout = 0, doc = 0) => ({ doc, root, origins: ['o'], timeout })
+// Nested types, run by a Yjs peer (`peer`) against the Swift server document.
+const et = (index, kind) => ({ op: 'embedtype', root: 't', index, kind })
+const nset = (nth, set, value, path) => ({ op: 'nested', root: 't', nth, set, value, ...(path ? { path } : {}) })
+const npush = (nth, push) => ({ op: 'nested', root: 't', nth, push })
+const peer = (client) => ({ client, gc: true, js: true })
+const server = { client: 9, gc: true }
 const AUDIT = {
   // Two adjacent deleted items of two clients are re-created in one undo.
   audit_s1b_adjacent_recreations: {
@@ -631,6 +637,37 @@ const AUDIT = {
     docs: one(), roots: ['t'], ums: [um('t')],
     steps: [tx(0, null, ins('t', 0, 'ac')), tx(0, null, ins('t', 1, 'b')), tx(0, 'o', del('t', 0, 3), ins('t', 0, 'z')),
       undo(0), redo(0)],
+  },
+  // Collecting a deleted type turns its children into GC structs (Item.gc with parentGCd), which
+  // the store's delete set covers; a child left behind without its parent cannot be encoded.
+  audit_nested_gc_map_children: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), tx(0, 'b', nset(0, 'k', 'v1')), sync(0, 1),
+      tx(0, 'b', del('t', 1, 1)), sync(0, 1)],
+  },
+  audit_nested_gc_recursive: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'array')), tx(0, 'b', npush(0, 'x'), npush(0, 'map'), npush(0, 'y')),
+      tx(0, 'b', nset(0, 'deep', 1, [1])), tx(0, 'b', nset(0, 'deep', 2, [1])), sync(0, 1), tx(0, 'b', del('t', 1, 1)),
+      sync(0, 1)],
+  },
+  // Every value a key ever held is collected, and the server's next update still encodes.
+  audit_nested_gc_overwritten_key: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'k', 'v1')), sync(0, 1),
+      tx(0, 'b', nset(0, 'k', 'v2')), sync(0, 1), tx(0, 'b', del('t', 1, 1)), sync(0, 1), tx(1, null, ins('t', 1, 'z')),
+      sync(1, 0)],
+  },
+  audit_nested_undo_under_remotely_deleted_parent: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'k', 'v1'), ins('t', 0, 'z')),
+      sync(0, 1, 'o'), tx(0, 'b', del('t', 2, 1)), sync(0, 1), undo(0), redo(0)],
+  },
+  // A key set in a type the server has deleted changes no type Yjs reports: nothing is captured.
+  audit_nested_update_in_deleted_type_untracked: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), sync(0, 1), tx(1, null, del('t', 1, 1)),
+      tx(0, 'b', nset(0, 'k', 'v')), sync(0, 1, 'o'), undo(0)],
   },
 }
 

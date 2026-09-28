@@ -516,15 +516,16 @@ final class NativeDoc {
             var ranges: [(clock: UInt64, length: UInt64)] = []
             var index = 0
             while index < structs.count {
-                guard let item = structs[index] as? Item, item.deleted else {
+                // GC structs count as deleted too (`GC.deleted`).
+                guard structs[index].isDeleted else {
                     index += 1
                     continue
                 }
-                let clock = item.id.clock
-                var length = item.length
+                let clock = structs[index].id.clock
+                var length = structs[index].length
                 var next = index + 1
-                while next < structs.count, let following = structs[next] as? Item, following.deleted {
-                    length += following.length
+                while next < structs.count, structs[next].isDeleted {
+                    length += structs[next].length
                     next += 1
                 }
                 ranges.append((clock, length))

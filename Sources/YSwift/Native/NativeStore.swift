@@ -193,10 +193,40 @@ final class NativeStore {
     }
 
     private func garbageCollect(_ client: UInt64) {
-        guard let structs = clients[client] else { return }
-        for s in structs {
-            guard let item = s as? Item, item.deleted, !item.keep else { continue }
+        guard let count = clients[client]?.count else { return }
+        // Collecting a type replaces its children in the store, so every struct is read afresh.
+        for index in 0..<count {
+            guard let item = clients[client]![index] as? Item, item.deleted, !item.keep else { continue }
             if case .deleted = item.content { continue }
+            self.collect(item, parentGCd: false)
+        }
+    }
+
+    /// `Item.gc`: a deleted item keeps its clocks as `ContentDeleted`, or becomes a GC struct when
+    /// the type holding it is collected. A collected type's children go first (`ContentType.gc`):
+    /// once the type is gone they have no parent to be encoded with.
+    private func collect(_ item: Item, parentGCd: Bool) {
+        if case .type(let type, _, _) = item.content {
+            var child = type.start
+            while let current = child {
+                child = current.right as? Item
+                self.collect(current, parentGCd: true)
+            }
+            type.start = nil
+            for latest in type.map.values {
+                var entry: Item? = latest
+                while let current = entry {
+                    entry = current.left as? Item
+                    self.collect(current, parentGCd: true)
+                }
+            }
+            type.map = [:]
+        }
+        if parentGCd {
+            // `replaceStruct`
+            let index = self.findIndex(clients[item.id.client]!, item.id.clock)
+            clients[item.id.client]![index] = GCStruct(id: item.id, length: item.length)
+        } else {
             item.content = .deleted(item.length)
         }
     }

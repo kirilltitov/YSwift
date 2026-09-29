@@ -86,6 +86,13 @@ remains the frozen contract established during the migration to native Swift.
   instead of stopping the process. As in yjs `addStackToRestSS`, the structs of
   a client that follow an item waiting for a dependency wait with it and are not
   looked at until it arrives. Pinned by the `malformed` golden vectors.
+- **A document whose client id an update uses takes a new one.** As in yjs,
+  a transaction that applied an update and advanced the document's own client
+  gives the document a new random 32-bit id when it commits, so that its later
+  edits do not reuse clocks another peer wrote under that id; the update is
+  still accepted. A mixed transaction (local edits and an update) counts, as in
+  yjs. `YDoc.clientID` is therefore not stable; awareness keeps the id it was
+  created with, as y-protocols does.
 - **What yjs fails to collect is rejected.** A run sent again is linked in after
   the struct just before its first new clock whatever that struct's parent, in
   yjs as here, so a malformed update can thread one list or key chain into

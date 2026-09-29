@@ -16,7 +16,10 @@ private final class ClientRefs {
 }
 
 final class NativeDoc {
-    let clientID: UInt64
+    /// This document's client id. A transaction that applied an update which advanced it takes a new
+    /// one (see `commitTransaction`). Atomic because `YDoc.clientID` reads it outside any transaction.
+    var clientID: UInt64 { self.clientIDStorage.load(ordering: .relaxed) }
+    private let clientIDStorage: Atomic<UInt64>
     /// When false, deleted content is kept verbatim (no GC to `ContentDeleted`) —
     /// matches `new Y.Doc({ gc: false })`.
     let gc: Bool
@@ -25,7 +28,7 @@ final class NativeDoc {
     private(set) var share: [String: YTypeImpl] = [:]
 
     init(clientID: UInt64 = 0, gc: Bool = true) {
-        self.clientID = clientID
+        self.clientIDStorage = Atomic(clientID)
         self.gc = gc
     }
 
@@ -57,6 +60,8 @@ final class NativeDoc {
     private var txnStartIntegratedCount = 0
     private var txnStartSplitCount = 0
     private var txnOrigin: Origin?
+    /// Whether the transaction applied an update (yjs: it is not `local`).
+    private var txnAppliedUpdate = false
 
     /// Update handlers, behind their own lock so `removeUpdateHandler` (called from
     /// a `YSubscription.cancel()` that can't reach `YDoc.sync`) never races
@@ -117,6 +122,7 @@ final class NativeDoc {
             self.store.transactionBeforeState = self.txnBeforeState
             self.store.changedRootNamesAreComplete = true
             self.txnOrigin = origin
+            self.txnAppliedUpdate = false
         }
         self.txnDepth += 1
     }
@@ -160,6 +166,12 @@ final class NativeDoc {
         self.store.changedTypeNames = nil
         self.store.changedTypes = nil
         self.txnOrigin = nil
+
+        // An applied update that advanced this document's own client shows that another peer writes under
+        // its id: yjs takes a new random 32-bit one, so that later edits do not reuse that peer's clocks.
+        if self.txnAppliedUpdate, self.store.getState(self.clientID) != beforeState[self.clientID] ?? 0 {
+            self.clientIDStorage.store(UInt64.random(in: 0..<(1 << 32)), ordering: .relaxed)
+        }
 
         // 4. Emit the incremental update to onUpdate handlers.
         let snapshot = self.handlers.withLock { $0.list }
@@ -277,6 +289,7 @@ final class NativeDoc {
     /// Decodes and integrates a v1 update; buffers and retries anything that
     /// depends on data not yet present.
     func applyUpdate(_ bytes: [UInt8]) throws {
+        self.txnAppliedUpdate = true
         if try self.integrate(bytes) { self.pendingUpdates.append(bytes) }
         try self.retryPending()
         // Yjs collects the transaction's deletions when it ends, and throws where that fails; this

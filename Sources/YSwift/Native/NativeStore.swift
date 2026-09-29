@@ -223,28 +223,37 @@ final class NativeStore {
         return state
     }
 
-    /// Transaction cleanup: replaces deleted content with `ContentDeleted` (GC with
-    /// `parentGCd == false`) and merges adjacent compatible structs. Ports the
-    /// `tryGcDeleteSet` + per-client `tryToMergeWithLefts` cleanup. Runs over every
+    /// Transaction cleanup: replaces the content of the transaction's deleted items with
+    /// `ContentDeleted` (GC with `parentGCd == false`) and merges adjacent compatible structs. Ports
+    /// the `tryGcDeleteSet` + per-client `tryToMergeWithLefts` cleanup. Merging runs over every
     /// client, which is safe because already-merged runs are left untouched.
-    func cleanup(gc: Bool = true) {
+    func cleanup(gc: Bool, deletes: [(client: UInt64, clock: UInt64, length: UInt64)]) {
+        var ranges: [UInt64: [(clock: UInt64, length: UInt64)]] = [:]
+        if gc {
+            for delete in deletes { ranges[delete.client, default: []].append((delete.clock, delete.length)) }
+        }
         for client in self.clients.keys {
-            if gc { self.garbageCollect(client) }
+            if let ranges = ranges[client] { self.garbageCollect(client, ranges) }
             self.mergeClient(client)
         }
     }
 
-    private func garbageCollect(_ client: UInt64) {
-        guard let structs = clients[client] else { return }
-        // One load per struct from a snapshot. Collecting a type replaces its children with GC
-        // structs in place (the count never changes), so from then on structs are read afresh.
-        var collectedType = false
-        for index in structs.indices {
-            let s = collectedType ? clients[client]![index] : structs[index]
-            guard let item = s as? Item, item.deleted, !item.keep else { continue }
-            if case .deleted = item.content { continue }
-            if case .type = item.content { collectedType = true }
-            self.collect(item, parentGCd: false)
+    /// Collects the unprotected items the transaction deleted, and only those: an item deleted
+    /// earlier under protection (`keep`) stays as it is once the protection is lifted, as in yjs.
+    private func garbageCollect(_ client: UInt64, _ ranges: [(clock: UInt64, length: UInt64)]) {
+        for range in ranges {
+            // Collecting a type replaces its children with GC structs in place (the count never
+            // changes), so structs are read afresh.
+            let count = clients[client]!.count
+            var index = self.findIndex(clients[client]!, range.clock)
+            while index < count {
+                let s = clients[client]![index]
+                guard s.id.clock < range.clock + range.length else { break }
+                index += 1
+                guard let item = s as? Item, item.deleted, !item.keep else { continue }
+                if case .deleted = item.content { continue }
+                self.collect(item, parentGCd: false)
+            }
         }
     }
 

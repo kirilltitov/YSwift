@@ -870,6 +870,32 @@ const AUDIT = {
     steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), sync(0, 1), tx(1, null, del('t', 1, 1)),
       tx(0, 'b', nset(0, 'k', 'v')), sync(0, 1, 'o'), undo(0)],
   },
+  // A fresh tracked edit clears the redo stack through `clear(false, true)`, which un-keeps the
+  // stack's deletions and their parent items. An untracked delete of the embedded map then collects
+  // it: the map becomes ContentDeleted and its children GC structs.
+  audit_redo_clear_unkeeps_parent_local_delete: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', et(0, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'k0', 1)), sync(0, 1, 'o'), undo(0),
+      tx(1, 'o', ins('t', 1, 'x')), tx(1, null, del('t', 0, 1))],
+  },
+  audit_redo_clear_unkeeps_parent_remote_delete: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', et(0, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'k0', 1)), sync(0, 1, 'o'), undo(0),
+      tx(1, 'o', ins('t', 1, 'x')), sync(1, 0), tx(0, 'b', del('t', 0, 1)), sync(0, 1)],
+  },
+  // Control: without the clearing edit the redo stack still keeps the map.
+  audit_redo_kept_parent_local_delete: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', et(0, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'k0', 1)), sync(0, 1, 'o'), undo(0),
+      tx(1, null, del('t', 0, 1))],
+  },
+  // The clearing edit deletes the map itself: the redo stack is un-kept first, then the edit's own
+  // deletions are kept, so the map survives for the undo that re-creates it.
+  audit_redo_clear_then_keep_tracked_delete: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', et(0, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'k0', 1)), sync(0, 1, 'o'), undo(0),
+      tx(1, 'o', del('t', 0, 1)), undo(0)],
+  },
 }
 
 // A deleted map entry the cleanup merges into its left neighbour must become the key's current

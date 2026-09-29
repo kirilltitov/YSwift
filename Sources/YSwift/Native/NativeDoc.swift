@@ -153,7 +153,9 @@ final class NativeDoc {
         // 3. Cleanup so the emitted update encodes the merged/GC'd store byte-exactly. A transaction
         //    that only split items (e.g. an undo that found nothing to change) merges them back too,
         //    as yjs merges every transaction's `_mergeStructs`.
-        if mutated || self.store.splitCount != self.txnStartSplitCount { self.store.cleanup(gc: self.gc) }
+        if mutated || self.store.splitCount != self.txnStartSplitCount {
+            self.store.cleanup(gc: self.gc, deletes: deletes)
+        }
         self.store.deleteLog = nil
         self.store.changedTypeNames = nil
         self.store.changedTypes = nil

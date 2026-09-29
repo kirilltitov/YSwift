@@ -56,6 +56,20 @@ remains the frozen contract established during the migration to native Swift.
 - **yjs `13.6.31`** is the golden-vector source. Byte-for-byte v1
   compatibility is verified on macOS and Linux (Swift 6.3.3).
 
+## Transaction cleanup (GC and merge)
+
+- **A document with `gc` collects the deleted items of the transaction's delete
+  set** that no `UndoManager` protects (`keep`), as yjs `tryGcDeleteSet` does; a
+  collected embedded type turns its children into GC structs. An item deleted
+  under protection stays uncollected if the protection is lifted later. Merging
+  still runs over every client.
+- **A fresh tracked edit lifts the redo stack's protection**, as yjs
+  `clear(false, true)` does when it drops a non-empty redo stack: its deleted
+  items in scope and their parent items lose `keep` before the edit's own
+  deletions are kept. An embedded type that only the redo stack protected is
+  then collected by a later delete, children included. Pinned by the
+  `audit_redo_*` undo fuzz scenarios.
+
 ## Known limitations
 
 - **Multi-attribute `format` byte order.** The public `Attributes` (and XML

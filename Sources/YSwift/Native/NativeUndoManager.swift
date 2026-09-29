@@ -129,7 +129,7 @@ final class NativeUndoManager {
         if self.undoing {
             self.stopCapturing()  // the next undo must start a fresh redo step
         } else if !self.redoing {
-            self.redoStack.removeAll()  // a fresh edit invalidates the redo stack
+            self.clearRedoStack()  // a fresh edit invalidates the redo stack
         }
 
         // `transaction.afterState` iterates the store's clients in insertion order.
@@ -165,8 +165,21 @@ final class NativeUndoManager {
 
         // Protect deleted content in scope from GC so it can be re-created on redo/undo.
         self.iterateDeletedStructs(deletions) { s in
-            if let item = s as? Item, self.isInScope(item) { Self.keepItem(item) }
+            if let item = s as? Item, self.isInScope(item) { Self.keepItem(item, true) }
         }
+    }
+
+    /// `clear(false, true)`: drops the redo stack and lifts its protection from GC — of its deleted
+    /// items in scope and, through `keepItem`, of their parent items — so a later delete collects
+    /// them as in yjs. Yjs runs it in a transaction of its own that changes no content; its splits
+    /// are merged here with those of the transaction being captured, which merges the same structs.
+    private func clearRedoStack() {
+        for stackItem in self.redoStack {
+            self.iterateDeletedStructs(stackItem.deletions) { s in
+                if let item = s as? Item, self.isInScope(item) { Self.keepItem(item, false) }
+            }
+        }
+        self.redoStack.removeAll()
     }
 
     // MARK: Pop
@@ -256,11 +269,12 @@ final class NativeUndoManager {
         return false
     }
 
-    /// `keepItem(item, true)`: protects the item and its parent items from GC.
-    private static func keepItem(_ item: Item) {
+    /// `keepItem`: protects the item and its parent items from GC, or lifts that protection, up to
+    /// the first one already in the requested state.
+    private static func keepItem(_ item: Item, _ keep: Bool) {
         var current: Item? = item
-        while let next = current, !next.keep {
-            next.setKeep(true)
+        while let next = current, next.keep != keep {
+            next.setKeep(keep)
             current = next.parent?.item
         }
     }
@@ -372,7 +386,7 @@ final class NativeUndoManager {
             content: content
         )
         item.redone = newItem.id
-        Self.keepItem(newItem)
+        Self.keepItem(newItem, true)
         newItem.left = left
         newItem.right = right
         newItem.integrate(store, offset: 0)

@@ -536,6 +536,19 @@ const mapEntryIn = (client, clock, key) => [0x28, 0, ...varUint(client), ...varU
 const deleteRanges = (client, ranges) => b64(new Uint8Array([
   0, 1, ...varUint(client), ...varUint(ranges.length), ...ranges.flatMap(([clock, length]) => [...varUint(clock), ...varUint(length)]),
 ]))
+/** Lists nested `depth` deep, level j by client 1000 + j, and an update deleting them innermost first:
+ *  undoing it re-creates the innermost first, which re-creates every level above it first. */
+const nestedAcrossClients = (depth) => {
+  const levels = range(depth, (i) => depth - 1 - i)
+  return [
+    b64(new Uint8Array([...varUint(depth), ...levels.flatMap((j) => [
+      1, ...varUint(1000 + j), 0, 0x07, ...(j === 0 ? [1, ...varString(KEY)] : [0, ...varUint(999 + j), 0]), 0,
+    ]), 0])),
+    b64(new Uint8Array([0, ...varUint(depth), ...levels.flatMap((j) => [...varUint(1000 + j), 1, 0, 1])])),
+  ]
+}
+/** An update setting root map key `a` to a number, which replaces the key's current value. */
+const rootEntry = (client) => rawUpdate(client, 0, [[0x28, 1, ...varString(KEY), ...varString('a'), 1, 125, 1]])
 const range = (count, at) => Array.from({ length: count }, (_, index) => at(index))
 /** `depth` types of one client, each nested in the one before as map entry `a` (`map`) or list element. */
 const nestedChain = (client, depth, map) => rawUpdate(client, 0, Array.from({ length: depth }, (_, k) => [
@@ -545,19 +558,31 @@ const nestedChain = (client, depth, map) => rawUpdate(client, 0, Array.from({ le
   map ? 1 : 0,
 ]))
 
-function malformedFixture(name, description, updates) {
+/** With `tracked`, an UndoManager on the root tracks the updates from that index on (origin `r`) and,
+ *  once all are applied, undoes and redoes the last of them. */
+function malformedFixture(name, description, updates, tracked = null) {
   const doc = new Y.Doc()
   doc.clientID = 999
+  const um = tracked === null
+    ? null
+    : new Y.UndoManager(doc.getText(KEY), { trackedOrigins: new Set(['r']), captureTimeout: 0 })
   let rejected = null
   for (const [index, update] of updates.entries()) {
     try {
-      Y.applyUpdate(doc, Buffer.from(update, 'base64'))
+      Y.applyUpdate(doc, Buffer.from(update, 'base64'), um !== null && index >= tracked ? 'r' : null)
     } catch {
       rejected = index
       break
     }
   }
-  return { name, description, updates, rejected, update: rejected === null ? b64(Y.encodeStateAsUpdate(doc)) : null }
+  if (um !== null && rejected === null) {
+    um.undo()
+    um.redo()
+  }
+  return {
+    name, description, updates, ...(tracked === null ? {} : { tracked }),
+    rejected, update: rejected === null ? b64(Y.encodeStateAsUpdate(doc)) : null,
+  }
 }
 
 const malformed = [
@@ -590,6 +615,20 @@ const malformed = [
     rawUpdate(5, 0, [rootString('ab'), mapEntryIn(5, 0, 'k')])]),
   // Size and depth: yjs accepts these; the document must survive them, and being dropped.
   malformedFixture('nested_map_chain', '2000 maps, each an entry of the one before', [nestedChain(5, 2000, true)]),
+  // Yjs deletes (and collects) a nested type recursively. On Node's default stack it deletes 3750 nested
+  // lists and 2187 nested maps, and throws a RangeError from a few more; YSwift rejects past 4096.
+  malformedFixture('nested_list_chain_deleted', '3000 nested lists, the outermost deleted', [
+    nestedChain(5, 3000, false), deleteRanges(5, [[0, 1]])]),
+  malformedFixture('nested_map_chain_deleted', '1000 nested maps, the outermost deleted', [
+    nestedChain(5, 1000, true), deleteRanges(5, [[0, 1]])]),
+  malformedFixture('nested_list_chain_deleted_too_deep', '5000 nested lists, the outermost deleted', [
+    nestedChain(5, 5000, false), deleteRanges(5, [[0, 1]])]),
+  malformedFixture('nested_map_chain_deleted_too_deep', '5000 nested maps, the outermost deleted', [
+    nestedChain(5, 5000, true), deleteRanges(5, [[0, 1]])]),
+  malformedFixture('nested_lists_redone_innermost_first', '2000 nested lists deleted innermost first, undone, redone',
+    nestedAcrossClients(2000), 1),
+  malformedFixture('nested_map_chain_replaced_too_deep', '5000 nested maps, the outermost replaced', [
+    nestedChain(5, 5000, true), rootEntry(6)]),
   malformedFixture('surrogate_pairs_split', 'deletes splitting surrogate pairs near either end of a string', [
     rawUpdate(5, 0, [rootString('\u{1F600}'.repeat(4))]), deleteRanges(5, [[1, 1], [6, 1]])]),
   malformedFixture('long_string_split_by_deletes', 'a 40 000-unit string split by 4000 deleted ranges', [

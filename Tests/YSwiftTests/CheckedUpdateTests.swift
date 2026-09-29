@@ -140,6 +140,7 @@ struct CheckedUpdateTests {
         struct Case: Decodable {
             let name: String
             let updates: [String]
+            let tracked: Int?
             let rejected: Int?
             let update: String?
         }
@@ -153,16 +154,24 @@ struct CheckedUpdateTests {
     }
 
     /// Applies the updates to a fresh document one per transaction, as the fixture generator does, and
-    /// drops the document before returning.
-    private static func replay(_ updates: [Data]) -> Replay {
+    /// drops the document before returning. With `tracked`, an UndoManager on the root tracks the updates
+    /// from that index on and, once all are applied, undoes and redoes the last of them.
+    private static func replay(_ updates: [Data], tracked: Int? = nil) -> Replay {
         let target = YDoc(clientID: 999)
+        let origin = Origin("r")
+        let undoManager = tracked.map { _ in
+            UndoManager(target.text("content"), trackedOrigins: [origin], captureTimeout: .zero)
+        }
         for (index, update) in updates.enumerated() {
             do {
-                try target.transact { try target.applyUpdateChecked($0, update) }
+                let isTracked = tracked.map { index >= $0 } ?? false
+                try target.transact(origin: isTracked ? origin : nil) { try target.applyUpdateChecked($0, update) }
             } catch {
                 return Replay(rejected: index, error: error as? YError, state: "")
             }
         }
+        undoManager?.undo()
+        undoManager?.redo()
         return Replay(state: target.transact { target.encodeStateAsUpdate($0).base64EncodedString() })
     }
 
@@ -193,7 +202,8 @@ struct CheckedUpdateTests {
     func rejectsUnresolvableReferencesAsYjs() throws {
         for fixture in try Self.malformedFixtures() {
             let updates = try fixture.updates.map { try #require(Data(base64Encoded: $0)) }
-            let replay = Self.onWorkerSizedStack { Self.replay(updates) }
+            let tracked = fixture.tracked
+            let replay = Self.onWorkerSizedStack { Self.replay(updates, tracked: tracked) }
             #expect(replay.rejected == fixture.rejected, "\(fixture.name): rejected update")
             if replay.rejected != nil {
                 #expect(replay.error == .invalidUpdate, "\(fixture.name)")

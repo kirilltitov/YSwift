@@ -98,29 +98,46 @@ final class NativeStore {
         }
     }
 
+    /// How many levels of nested types a deletion made by a remote update may reach. Yjs deletes a
+    /// type's children recursively and throws once the stack runs out, a few thousand levels down;
+    /// such an update is rejected here too (see DECISIONS.md), past a fixed depth.
+    static let remoteDeletionDepthLimit = 4096
+
+    /// Set while a remote update is applied: a deletion reaching deeper than
+    /// `remoteDeletionDepthLimit` then sets `deletionTooDeep`, for the update to be rejected.
+    var limitsDeletionDepth = false
+    var deletionTooDeep = false
+
     /// Marks `item` deleted, keeps parent length in sync, and records the deletion
     /// for the active transaction (`Item.delete`).
     func deleteItem(_ item: Item) {
-        guard !item.deleted else { return }
-        if item.countable, item.parentSub == nil {
-            item.parent?.length -= Int(item.length)
-        }
-        item.markDeleted()
-        self.version += 1
-        self.deleteLog?.append((item.id.client, item.id.clock, item.length))
-        if let name = item.parent?.name { self.changedTypeNames?.insert(name) }
-        self.addChangedType(item.parent)
-        self.checkChangedRootCompleteness(of: item)
         // `ContentType.delete`: a deleted type deletes its children, the list first, then the
-        // current value of every key in the order the keys were first set.
-        if case .type(let type, _, _) = item.content {
-            var child = type.start
-            while let current = child {
-                self.deleteItem(current)
-                child = current.right as? Item
+        // current value of every key in the order the keys were first set. A work list keeps that
+        // order without a stack frame per level of nesting.
+        var pending: [(item: Item, depth: Int)] = [(item, 1)]
+        while let (item, depth) = pending.popLast() {
+            guard !item.deleted else { continue }
+            if self.limitsDeletionDepth, depth > Self.remoteDeletionDepthLimit { self.deletionTooDeep = true }
+            if item.countable, item.parentSub == nil {
+                item.parent?.length -= Int(item.length)
             }
-            for key in type.mapKeys {
-                if let value = type.map[key] { self.deleteItem(value) }
+            item.markDeleted()
+            self.version += 1
+            self.deleteLog?.append((item.id.client, item.id.clock, item.length))
+            if let name = item.parent?.name { self.changedTypeNames?.insert(name) }
+            self.addChangedType(item.parent)
+            self.checkChangedRootCompleteness(of: item)
+            if case .type(let type, _, _) = item.content {
+                var children: [Item] = []
+                var child = type.start
+                while let current = child {
+                    children.append(current)
+                    child = current.right as? Item
+                }
+                for key in type.mapKeys {
+                    if let value = type.map[key] { children.append(value) }
+                }
+                pending.append(contentsOf: children.reversed().lazy.map { ($0, depth + 1) })
             }
         }
     }
@@ -262,31 +279,41 @@ final class NativeStore {
 
     /// `Item.gc`: a deleted item keeps its clocks as `ContentDeleted`, or becomes a GC struct when
     /// the type holding it is collected. A collected type's children go first (`ContentType.gc`):
-    /// once the type is gone they have no parent to be encoded with.
+    /// once the type is gone they have no parent to be encoded with. A work list does so without a
+    /// stack frame per level of nesting.
     private func collect(_ item: Item, parentGCd: Bool) {
-        if case .type(let type, _, _) = item.content {
-            var child = type.start
-            while let current = child {
-                child = current.right as? Item
-                self.collect(current, parentGCd: true)
-            }
-            type.start = nil
-            for latest in type.map.values {
-                var entry: Item? = latest
-                while let current = entry {
-                    entry = current.left as? Item
-                    self.collect(current, parentGCd: true)
+        var pending: [(item: Item, parentGCd: Bool, childrenCollected: Bool)] = [(item, parentGCd, false)]
+        while let (item, parentGCd, childrenCollected) = pending.popLast() {
+            if case .type(let type, _, _) = item.content {
+                guard childrenCollected else {
+                    pending.append((item, parentGCd, true))
+                    var children: [Item] = []
+                    var child = type.start
+                    while let current = child {
+                        children.append(current)
+                        child = current.right as? Item
+                    }
+                    for latest in type.map.values {
+                        var entry: Item? = latest
+                        while let current = entry {
+                            children.append(current)
+                            entry = current.left as? Item
+                        }
+                    }
+                    pending.append(contentsOf: children.reversed().lazy.map { ($0, true, false) })
+                    continue
                 }
+                type.start = nil
+                type.map = [:]
+                type.mapKeys = []
             }
-            type.map = [:]
-            type.mapKeys = []
-        }
-        if parentGCd {
-            // `replaceStruct`
-            let index = self.findIndex(clients[item.id.client]!, item.id.clock)
-            clients[item.id.client]![index] = GCStruct(id: item.id, length: item.length)
-        } else {
-            item.content = .deleted(item.length)
+            if parentGCd {
+                // `replaceStruct`
+                let index = self.findIndex(clients[item.id.client]!, item.id.clock)
+                clients[item.id.client]![index] = GCStruct(id: item.id, length: item.length)
+            } else {
+                item.content = .deleted(item.length)
+            }
         }
     }
 

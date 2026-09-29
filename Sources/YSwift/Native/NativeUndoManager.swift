@@ -297,19 +297,33 @@ final class NativeUndoManager {
     /// `redoItem` (yjs `structs/Item.js`): re-creates a deleted item at its old position — right
     /// before the original, after the nearest left neighbour that lives in the same parent — and
     /// returns the copy, or the existing copy if the item was already re-created.
+    ///
+    /// Yjs first redoes a deleted parent by recursing into it; the chain of deleted parents is
+    /// collected here instead and redone outermost first, without a stack frame per level.
     private func redoItem(_ item: Item, _ redoItems: Set<ObjectIdentifier>, itemsToDelete: DeleteSet) -> Struct? {
+        if let redone = item.redone { return self.doc.store.getItemCleanStart(redone) }
+        var chain = [item]
+        while let parent = chain.last?.parent?.item, parent.deleted, parent.redone == nil {
+            // A deleted parent this step does not redo cannot be redone, nor anything inside it.
+            guard redoItems.contains(ObjectIdentifier(parent)) else { return nil }
+            chain.append(parent)
+        }
+        var redone: Struct?
+        for item in chain.reversed() {
+            redone = self.redoItem(item, itemsToDelete: itemsToDelete)
+            if redone == nil { return nil }
+        }
+        return redone
+    }
+
+    /// `redoItem` for an item whose parent is not deleted or already redone.
+    private func redoItem(_ item: Item, itemsToDelete: DeleteSet) -> Struct? {
         let store = self.doc.store
         if let redone = item.redone { return store.getItemCleanStart(redone) }
         guard let itemParent = item.parent else { return nil }
         var parentItem = itemParent.item
-        // Make sure the parent is redone.
         if let deletedParent = parentItem, deletedParent.deleted {
-            if deletedParent.redone == nil,
-                !redoItems.contains(ObjectIdentifier(deletedParent))
-                    || self.redoItem(deletedParent, redoItems, itemsToDelete: itemsToDelete) == nil
-            {
-                return nil
-            }
+            guard deletedParent.redone != nil else { return nil }
             while let redone = parentItem?.redone { parentItem = store.getItemCleanStart(redone) as? Item }
         }
         let parentType: YTypeImpl

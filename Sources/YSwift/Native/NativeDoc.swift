@@ -286,8 +286,15 @@ final class NativeDoc {
     private func integrate(_ bytes: [UInt8]) throws -> Bool {
         let parsed = try UpdateCodec.readUpdate(bytes)
         let refs = self.buildClientRefs(parsed.clientBlocks)
+        // Where yjs runs out of stack deleting nested types, the update is rejected, as it is there
+        // once partly applied.
+        self.store.limitsDeletionDepth = true
+        self.store.deletionTooDeep = false
+        defer { self.store.limitsDeletionDepth = false }
         let structsDropped = try self.integrateStructs(refs)
+        guard !self.store.deletionTooDeep else { throw YError.invalidUpdate }
         let deletesDropped = self.store.applyDeleteSet(parsed.deleteSet)
+        guard !self.store.deletionTooDeep else { throw YError.invalidUpdate }
         return structsDropped || deletesDropped
     }
 

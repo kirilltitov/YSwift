@@ -79,6 +79,20 @@ remains the frozen contract established during the migration to native Swift.
   instead of stopping the process. As in yjs `addStackToRestSS`, the structs of
   a client that follow an item waiting for a dependency wait with it and are not
   looked at until it arrives. Pinned by the `malformed` golden vectors.
+- **A remote deletion reaching more than 4096 levels of nested types is
+  rejected.** Yjs deletes and collects a type's children recursively and
+  throws a `RangeError` once the stack runs out: Yjs 13.6.31 on Node 26 with
+  its default stack deletes up to about 2000–2500 nested maps and 3750 nested
+  lists (11 000 without gc), the exact depth depending on the engine, its
+  stack and what is already on it. YSwift deletes, collects, re-creates
+  (UndoManager) and releases nested types without recursion, so no depth stops
+  the process, and `applyUpdateChecked` reports `invalidUpdate` once a deletion
+  goes deeper than `NativeStore.remoteDeletionDepthLimit`, where Yjs has failed
+  too; between Yjs's depth and the limit YSwift accepts what Yjs throws on. As
+  in Yjs the update has then been applied in part, and the document must be
+  discarded, as after any error. Local edits and undo/redo delete at any depth:
+  they have no error to report (Yjs `undo()` throws deep enough). Pinned by the
+  `nested_*` malformed golden vectors.
 
 ## Known limitations
 

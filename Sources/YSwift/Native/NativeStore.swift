@@ -230,17 +230,16 @@ final class NativeStore {
     /// Binary search for the struct covering `clock` (ported from `findIndexSS`,
     /// including the pivot heuristic).
     func findIndex(_ structs: [Struct], _ clock: UInt64) -> Int {
+        // Fields are read straight from the array: holding a struct in a variable retains it.
         var left = 0
         var right = structs.count - 1
-        var mid = structs[right]
-        var midClock = mid.id.clock
+        var midClock = structs[right].id.clock
         if midClock == clock { return right }
-        var midIndex = Int((Double(clock) / Double(midClock + mid.length - 1)) * Double(right))
+        var midIndex = Int((Double(clock) / Double(midClock + structs[right].length - 1)) * Double(right))
         while left <= right {
-            mid = structs[midIndex]
-            midClock = mid.id.clock
+            midClock = structs[midIndex].id.clock
             if midClock <= clock {
-                if clock < midClock + mid.length { return midIndex }
+                if clock < midClock + structs[midIndex].length { return midIndex }
                 left = midIndex + 1
             } else {
                 right = midIndex - 1

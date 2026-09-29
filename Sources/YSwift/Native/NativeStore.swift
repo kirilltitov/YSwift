@@ -527,14 +527,17 @@ final class NativeStore {
     /// (`readAndApplyDeleteSet`). Returns the ranges of clocks not present yet, to be applied later.
     func applyDeleteSet(_ deleteSet: DeleteRanges) -> DeleteRanges {
         var unapplied: DeleteRanges = []
+        // The store's arrays are changed in place, one short access at a time: a local copy of a client's
+        // array was copied again by its first split.
         for client in deleteSet {
+            let id = client.client
             var rest: [(clock: UInt64, length: UInt64)] = []
-            defer { if !rest.isEmpty { unapplied.append((client.client, rest)) } }
-            guard var structs = clients[client.client], !structs.isEmpty else {
+            defer { if !rest.isEmpty { unapplied.append((id, rest)) } }
+            guard self.clients[id]?.isEmpty == false else {
                 rest = client.ranges
                 continue
             }
-            let state = self.getState(client.client)
+            let state = self.getState(id)
             for range in client.ranges {
                 let clock = range.clock
                 let clockEnd = clock + range.length
@@ -543,24 +546,25 @@ final class NativeStore {
                     continue
                 }
                 if state < clockEnd { rest.append((state, clockEnd - state)) }
-                var index = self.findIndex(structs, clock)
-                if let item = structs[index] as? Item, !item.deleted, item.id.clock < clock {
-                    structs.insert(splitItem(item, Int(clock - item.id.clock)), at: index + 1)
+                var index = self.findIndex(self.clients[id]!, clock)
+                if let item = self.clients[id]![index] as? Item, !item.deleted, item.id.clock < clock {
+                    let right = self.splitItem(item, Int(clock - item.id.clock))
+                    self.clients[id]!.insert(right, at: index + 1)
                     index += 1
                 }
-                while index < structs.count {
-                    let s = structs[index]
+                while index < self.clients[id]!.count {
+                    let s = self.clients[id]![index]
                     index += 1
                     guard s.id.clock < clockEnd else { break }
                     if let item = s as? Item, !item.deleted {
                         if clockEnd < item.id.clock + item.length {
-                            structs.insert(splitItem(item, Int(clockEnd - item.id.clock)), at: index)
+                            let right = self.splitItem(item, Int(clockEnd - item.id.clock))
+                            self.clients[id]!.insert(right, at: index)
                         }
                         self.deleteItem(item)
                     }
                 }
             }
-            clients[client.client] = structs
         }
         return unapplied
     }

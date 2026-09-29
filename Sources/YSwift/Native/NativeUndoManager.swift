@@ -164,8 +164,9 @@ final class NativeUndoManager {
         }
 
         // Protect deleted content in scope from GC so it can be re-created on redo/undo.
+        var inScope: [ObjectIdentifier: Bool] = [:]
         self.iterateDeletedStructs(deletions) { s in
-            if let item = s as? Item, self.isInScope(item) { Self.keepItem(item, true) }
+            if let item = s as? Item, self.isInScope(item, &inScope) { Self.keepItem(item, true) }
         }
     }
 
@@ -174,9 +175,10 @@ final class NativeUndoManager {
     /// them as in yjs. Yjs runs it in a transaction of its own that changes no content; its splits
     /// are merged here with those of the transaction being captured, which merges the same structs.
     private func clearRedoStack() {
+        var inScope: [ObjectIdentifier: Bool] = [:]
         for stackItem in self.redoStack {
             self.iterateDeletedStructs(stackItem.deletions) { s in
-                if let item = s as? Item, self.isInScope(item) { Self.keepItem(item, false) }
+                if let item = s as? Item, self.isInScope(item, &inScope) { Self.keepItem(item, false) }
             }
         }
         self.redoStack.removeAll()
@@ -193,6 +195,7 @@ final class NativeUndoManager {
                 var itemsToRedo: [Item] = []
                 var redoSet = Set<ObjectIdentifier>()
                 var itemsToDelete: [Item] = []
+                var inScope: [ObjectIdentifier: Bool] = [:]
                 self.iterateDeletedStructs(stackItem.insertions) { s in
                     guard var item = s as? Item else { return }
                     if item.redone != nil {
@@ -205,11 +208,11 @@ final class NativeUndoManager {
                         guard let nextItem = next as? Item else { return }
                         item = nextItem
                     }
-                    if !item.deleted, self.isInScope(item) { itemsToDelete.append(item) }
+                    if !item.deleted, self.isInScope(item, &inScope) { itemsToDelete.append(item) }
                 }
                 self.iterateDeletedStructs(stackItem.deletions) { s in
                     // Never redo what the same step inserted: it was created and deleted within it.
-                    guard let item = s as? Item, self.isInScope(item), !stackItem.insertions.contains(item.id)
+                    guard let item = s as? Item, self.isInScope(item, &inScope), !stackItem.insertions.contains(item.id)
                     else {
                         return
                     }
@@ -257,16 +260,29 @@ final class NativeUndoManager {
         }
     }
 
-    /// Scope check (`isParentOf(scope, item)`): the item lives in this manager's text or in a
-    /// type nested inside it.
-    private func isInScope(_ item: Item) -> Bool {
+    /// Scope check (`isParentOf(scope, item)`): the item lives in this manager's text or in a type
+    /// nested inside it. `known` keeps the answer for every type climbed through, so that the items of
+    /// one walk climb the nesting they share once rather than once each: deeply nested items made each
+    /// walk quadratic.
+    private func isInScope(_ item: Item, _ known: inout [ObjectIdentifier: Bool]) -> Bool {
         let scope = self.doc.get(self.typeName)
-        var child: Item? = item
-        while let current = child {
-            if current.parent === scope { return true }
-            child = current.parent?.item
+        var climbed: [ObjectIdentifier] = []
+        var type = item.parent
+        var inScope = false
+        while let current = type {
+            if current === scope {
+                inScope = true
+                break
+            }
+            if let answer = known[ObjectIdentifier(current)] {
+                inScope = answer
+                break
+            }
+            climbed.append(ObjectIdentifier(current))
+            type = current.item?.parent
         }
-        return false
+        for id in climbed { known[id] = inScope }
+        return inScope
     }
 
     /// `keepItem`: protects the item and its parent items from GC, or lifts that protection, up to

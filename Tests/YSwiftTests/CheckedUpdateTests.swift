@@ -240,6 +240,15 @@ struct CheckedUpdateTests {
         }
     }
 
+    @Test("undoing a step deep inside the scope takes time in proportion to the step")
+    func undoesDeepInsideTheScopeInLinearTime() throws {
+        let fixture = try #require(try Self.malformedFixtures().first { $0.name == "deep_scope_undone" })
+        let updates = try fixture.updates.map { try #require(Data(base64Encoded: $0)) }
+        let elapsed = ContinuousClock().measure { _ = Self.replay(updates, tracked: fixture.tracked) }
+        // When every item's scope check climbed the 2000 levels on its own, this took seconds.
+        #expect(elapsed < .seconds(1), "\(elapsed)")
+    }
+
     /// Where the elements of a run's payload start in memory.
     private static func storage(of content: Content) -> UnsafeRawPointer? {
         switch content {

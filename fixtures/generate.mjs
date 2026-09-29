@@ -547,6 +547,16 @@ const nestedAcrossClients = (depth) => {
     b64(new Uint8Array([0, ...varUint(depth), ...levels.flatMap((j) => [...varUint(1000 + j), 1, 0, 1])])),
   ]
 }
+/** `depth` nested lists (client 5) with a string of 2 × `count` units (client 6) in the innermost, and
+ *  an update deleting every other unit of it. */
+const deepScope = (depth, count) => [
+  b64(new Uint8Array([
+    2, 1, 6, 0, 0x04, 0, 5, ...varUint(depth - 1), ...varString('x'.repeat(2 * count)),
+    ...varUint(depth), 5, 0, ...range(depth, (k) => [0x07, ...(k === 0 ? [1, ...varString(KEY)] : [0, 5, ...varUint(k - 1)]), 0]).flat(),
+    0,
+  ])),
+  deleteRanges(6, range(count, (i) => [2 * i, 1])),
+]
 /** An update setting root map key `a` to a number, which replaces the key's current value. */
 const rootEntry = (client) => rawUpdate(client, 0, [[0x28, 1, ...varString(KEY), ...varString('a'), 1, 125, 1]])
 const range = (count, at) => Array.from({ length: count }, (_, index) => at(index))
@@ -627,6 +637,8 @@ const malformed = [
     nestedChain(5, 5000, true), deleteRanges(5, [[0, 1]])]),
   malformedFixture('nested_lists_redone_innermost_first', '2000 nested lists deleted innermost first, undone, redone',
     nestedAcrossClients(2000), 1),
+  malformedFixture('deep_scope_undone', '4000 units deleted 2000 lists deep in the scope, undone, redone',
+    deepScope(2000, 4000), 1),
   malformedFixture('nested_map_chain_replaced_too_deep', '5000 nested maps, the outermost replaced', [
     nestedChain(5, 5000, true), rootEntry(6)]),
   malformedFixture('surrogate_pairs_split', 'deletes splitting surrogate pairs near either end of a string', [

@@ -597,6 +597,17 @@ const nestedChain = (client, depth, map) => rawUpdate(client, 0, Array.from({ le
   map ? 1 : 0,
 ]))
 
+/** `depth` lists of client 2, each the root's own element by its parent, yet each linked into the list
+ *  before: every update resends the run from the client's last clock, a string of the root, and follows it
+ *  with the next list and a string in it. */
+const threadedLists = (depth) => {
+  const updates = [rawUpdate(2, 0, [[0x07, 1, ...varString(KEY), 0], stringIn(2, 0, 'a')])]
+  for (let level = 1, last = 1; level < depth; level++, last += 3) {
+    updates.push(rawUpdate(2, last, [rootString('xy'), [0x87, 2, ...varUint(last + 1), 0], stringIn(2, last + 2, 'a')]))
+  }
+  return updates
+}
+
 /** With `tracked`, an UndoManager on the root tracks the updates from that index on (origin `r`) and,
  *  once all are applied, undoes and redoes the last of them. With `xml`, the root's XML string is
  *  recorded too. `gc: false` replays into a document that keeps deleted content. YSwift rejects nesting
@@ -671,7 +682,7 @@ const malformed = [
   malformedFixture('entry_resent_after_its_map_collected', 'a resent entry of a map linked after the map itself', [
     rawUpdate(5, 0, [rootMapType()]), rawUpdate(5, 0, [deletedEntryIn(5, 0, 'l', 2)])]),
   malformedFixture('entry_resent_after_its_map_kept', 'the same without gc', [
-    rawUpdate(5, 0, [rootMapType()]), rawUpdate(5, 0, [deletedEntryIn(5, 0, 'l', 2)])], { gc: false }),
+    rawUpdate(5, 0, [rootMapType()]), rawUpdate(5, 0, [deletedEntryIn(5, 0, 'l', 2)])], { gc: false, yswiftRejects: 1 }),
   // A run resent from its middle is linked in after the struct before its first new clock. Yjs reads that
   // struct's right neighbour, which a GC struct does not have, and throws before changing anything.
   ...[true, false].map((gc) => malformedFixture(`resent_run_after_wire_gc${gc ? '' : '_without_gc'}`,
@@ -680,7 +691,7 @@ const malformed = [
   ...[true, false].map((gc) => malformedFixture(`resent_run_after_collected_child${gc ? '' : '_without_gc'}`,
     'the same after a child the document collected with its list (kept without gc)', [
       rawUpdate(5, 0, [rootListType(), stringIn(5, 0, 'xy')]), deleteRanges(5, [[0, 1]]),
-      rawUpdate(5, 2, [rootString('abc')])], { gc })),
+      rawUpdate(5, 2, [rootString('abc')])], { gc, ...(gc ? {} : { yswiftRejects: 2 }) })),
   // Yjs deletes only a map's current value with the map, yet collects the whole key chain, and throws on
   // an item there that is not deleted: here the left half of a split value, and an item of another
   // type linked into a list by a resent run. Without gc nothing is collected and yjs accepts them.
@@ -696,8 +707,19 @@ const malformed = [
     malformedFixture(`collected_list_reaches_foreign_item${gc ? '' : '_without_gc'}`,
       'a list deleted with an item of the root linked into it', [
         rawUpdate(5, 0, [rootListType(), stringIn(5, 0, 'xy')]), rawUpdate(5, 2, [stringAfter(6, 0, 'ab')]),
-        rawUpdateDeleting(6, 0, [rootString('z')], 5, [[0, 1]])], { gc }),
+        rawUpdateDeleting(6, 0, [rootString('z')], 5, [[0, 1]])], { gc, ...(gc ? {} : { yswiftRejects: 2 }) }),
   ]),
+  // A run resent from its middle whose earlier part lies under another parent or key: valid updates never
+  // carry one, as the part already held is the same struct. Yjs links it into that part's list anyway while
+  // it counts it in its own parent, so the lists no longer match the parents: a type whose parent is the
+  // root lies nested in another, as deep as updates thread it, and a text's length can drop below zero.
+  // Its own encoding then reloads into another document. YSwift rejects such a run, which yjs accepts.
+  ...[true, false].map((gc) => malformedFixture(`resent_run_under_another_parent${gc ? '' : '_without_gc'}`,
+    'lists nested through runs of the root resent after the list before', threadedLists(3), { gc, yswiftRejects: 1 })),
+  malformedFixture('resent_run_under_another_root', 'a run of one root resent after a run of another', [
+    rawUpdate(1, 0, [[0x04, 1, ...varString('b'), ...varString('x')]]),
+    rawUpdate(2, 0, [[0x04, 1, ...varString('c'), ...varString('aaa')]]), rawUpdate(2, 2, [stringAfter(1, 0, 'zzzz')]),
+    deleteRanges(2, [[0, 6]])], { yswiftRejects: 2 }),
   // Structs waiting for missing clocks are kept merged into one update, as yjs keeps them, and retried
   // once when a later update brings a clock they miss; a retry that throws drops them, and the update
   // that set it off reports the error, while later updates apply.

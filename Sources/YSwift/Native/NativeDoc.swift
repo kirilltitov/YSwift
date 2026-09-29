@@ -468,11 +468,20 @@ final class NativeDoc {
                 } else if offset == 0 || offset < Int(head.length) {
                     // Yjs links a run resent from its middle in after the struct just before its first
                     // new clock and reads that struct's right neighbour; a GC struct has none, and yjs
-                    // throws before changing anything.
-                    if offset > 0, let item = head as? Item, item.parent != nil,
-                        !(self.store.getItem(YID(client: item.id.client, clock: localClock - 1)) is Item)
-                    {
-                        throw YError.invalidUpdate
+                    // throws before changing anything. In a valid update that struct is the part of the
+                    // same run already held; one under another parent or key would lie in a list its
+                    // parent does not own, which yjs accepts, nesting types deeper than their parents
+                    // say. It is rejected, so that every item lies in its parent's list.
+                    if offset > 0, let item = head as? Item, item.parent != nil {
+                        let left = self.store.getItem(YID(client: item.id.client, clock: localClock - 1)) as? Item
+                        guard let left else {
+                            throw YError.invalidUpdate
+                        }
+                        if self.store.rejectsRunsUnderAnotherParent,
+                            left.parent !== item.parent || left.parentSub != item.parentSub
+                        {
+                            throw YError.invalidUpdate
+                        }
                     }
                     // Nesting that browsers could not delete is not built at all.
                     if let parent = (head as? Item)?.parent, parent.depth >= self.store.nestingLimit {

@@ -259,6 +259,14 @@ struct CheckedUpdateTests {
             if let update = fixture.update, fixture.yswiftRejects == nil {
                 #expect(replay.state == update, "\(fixture.name): state")
             }
+            // Whatever the document accepts, its own encoding loads again.
+            if replay.rejected == nil {
+                let state = try #require(Data(base64Encoded: replay.state))
+                let reload = Self.onWorkerSizedStack(fixture.name) {
+                    Self.replay([state], gc: gc, unlimited: unlimited)
+                }
+                #expect(reload.rejected == nil, "\(fixture.name): reloaded")
+            }
         }
     }
 

@@ -5,7 +5,8 @@ import Testing
 
 // Updates that thread one list or key chain into another: a run sent again is linked in after the
 // struct just before its first new clock, whatever that struct's parent (yjs `Item.integrate`). The
-// document then holds chains that lead back into themselves. Every walk over them must end.
+// document then holds chains that lead back into themselves. YSwift rejects such runs; these tests let
+// them in, as yjs does, to check that every walk over such chains still ends.
 extension CheckedUpdateTests {
     /// Hex strings as bytes.
     private static func bytes(_ hex: String) -> [UInt8] {
@@ -24,6 +25,7 @@ extension CheckedUpdateTests {
         }
         Self.onWorkerSizedStack("collect", seconds: 10, megabytes: 256) {
             let doc = NativeDoc(clientID: 1, gc: false)
+            doc.store.rejectsRunsUnderAnotherParent = false
             for update in updates { try? doc.applyUpdate(update) }
             doc.store.cleanup(gc: true, deletes: [(client: 5, clock: 0, length: 2)])
         }
@@ -57,6 +59,7 @@ extension CheckedUpdateTests {
     /// structured fuzz harness does, then undoes and redoes everything.
     private static func replayUnderUndo(_ updates: [String], root: String) -> Int {
         let doc = YDoc(clientID: 7777)
+        (doc.engine as? NativeEngine)?.doc.store.rejectsRunsUnderAnotherParent = false
         let undoManager = UndoManager(doc.text(root), trackedOrigins: [Origin("u")], captureTimeout: .zero)
         for update in updates.map({ Data(Self.bytes($0)) }) {
             try? doc.transact(origin: Origin("u")) { try doc.applyUpdateChecked($0, update) }

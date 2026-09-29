@@ -95,8 +95,9 @@ remains the frozen contract established during the migration to native Swift.
   created with, as y-protocols does.
 - **What yjs fails to collect is rejected.** A run sent again is linked in after
   the struct just before its first new clock whatever that struct's parent, in
-  yjs as here, so a malformed update can thread one list or key chain into
-  another until it leads back into itself. Yjs collects a deleted type's
+  yjs, so a malformed update can thread one list or key chain into another
+  until it leads back into itself (YSwift now rejects such a run, below, and
+  keeps these checks as a second line). Yjs collects a deleted type's
   children recursively when the transaction ends, and there loops without end
   or overflows its stack. It also throws on a child that is not deleted, which
   needs no cycle: a type's deletion deletes only the current value of each key,
@@ -117,6 +118,23 @@ remains the frozen contract established during the migration to native Swift.
   struct's right neighbour, which a GC struct lacks, before changing anything;
   YSwift used to insert the run at the start of its parent. Pinned by the
   `resent_run_after_*` malformed golden vectors.
+- **A run resent from its middle under another parent or key is rejected.** In
+  a valid update the struct just before the run's first new clock is the part
+  of the same run already held, with the same parent and key. Yjs links the
+  run in after whatever struct is there, yet counts it in its own parent, so
+  the lists stop matching the parents: a type whose parent is the root lies in
+  the list of another type, and each such update nests one level deeper,
+  unseen by a depth counted along the parents (a text's length can also drop
+  below zero). Yjs applies this at any depth, fails to delete or render it past
+  its stack, and its own encoding reloads into another document, in which the
+  run takes the parent of its new left neighbour. YSwift rejects such a run,
+  which yjs accepts; this is deliberate, and it keeps every item in its
+  parent's list, so the nesting limit below holds for where items lie and a
+  document reloads from its own encoding. Pinned by the
+  `resent_run_under_another_*`, `entry_resent_after_its_map_kept`,
+  `resent_run_after_collected_child_without_gc` and
+  `collected_list_reaches_foreign_item_without_gc` malformed golden vectors
+  (all accepted by yjs, marked `yswiftRejects`).
 - **A remote update may build and delete 512 levels of nested content.** Yjs
   deletes and collects a type's children recursively and fails once the stack
   runs out (a `RangeError`, or in WebKit an `Unexpected case` from collecting
@@ -152,10 +170,9 @@ remains the frozen contract established during the migration to native Swift.
   index before the start as the start and one past the end as the end, as yjs
   does past the end. For a negative index yjs encodes an id before the first
   item, which no document resolves; YSwift does not copy that. A malformed
-  update can drive a text's length below zero in yjs and here alike (a run
-  resent from its middle joins the run before it, even one of another text):
-  the length is reported as yjs reports it, and an index into such a text is
-  taken as above.
+  update can drive a text's length below zero in yjs (a run resent from its
+  middle joins the run before it, even one of another text); YSwift rejects
+  such a run (`resent_run_under_another_root`).
 - **Numbers keep their sign; every NaN is written as the quiet NaN.** lib0
   writes -0 as a zero varint with the sign bit, which YSwift now reads back as
   -0. Which NaN yjs writes back depends on the engine's `DataView`: WebKit

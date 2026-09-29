@@ -113,6 +113,10 @@ final class NativeStore {
     /// `remoteNestingLimit` for this store. Only tests lift it, to build deeper documents.
     var nestingLimit = NativeStore.remoteNestingLimit
 
+    /// Whether a run resent from its middle after a struct of another parent or key is rejected. Only tests
+    /// lift it, to build the chains yjs builds from such runs and check that every walk over them ends.
+    var rejectsRunsUnderAnotherParent = true
+
     /// Set while a remote update is applied: a deletion reaching deeper than `nestingLimit`, or a type's
     /// list that leads back into itself (yjs deletes along it without end), then sets
     /// `remoteDeletionFailed`, for the update to be rejected.

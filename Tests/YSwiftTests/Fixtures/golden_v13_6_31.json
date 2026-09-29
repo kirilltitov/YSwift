@@ -1364,6 +1364,7 @@
         "AQEFACEABQABbAIA"
       ],
       "gc": false,
+      "yswiftRejects": 1,
       "rejected": null,
       "update": "AQIFAAcBB2NvbnRlbnQBoQUAAQEFAQAC"
     },
@@ -1408,6 +1409,7 @@
         "AQEFAgQBB2NvbnRlbnQDYWJjAA=="
       ],
       "gc": false,
+      "yswiftRejects": 2,
       "rejected": null,
       "update": "AQMFAAcBB2NvbnRlbnQABAAFAAJ4eYQFAgJiYwEFAQAD"
     },
@@ -1475,8 +1477,47 @@
         "AQEGAAQBB2NvbnRlbnQBegEFAQAB"
       ],
       "gc": false,
+      "yswiftRejects": 2,
       "rejected": null,
       "update": "AgEGAAQBB2NvbnRlbnQBegMFAAcBB2NvbnRlbnQABAAFAAJ4eYQFAgFiAQUBAAM="
+    },
+    {
+      "name": "resent_run_under_another_parent",
+      "description": "lists nested through runs of the root resent after the list before",
+      "updates": [
+        "AQICAAcBB2NvbnRlbnQABAACAAFhAA==",
+        "AQMCAQQBB2NvbnRlbnQCeHmHAgIABAACAwFhAA==",
+        "AQMCBAQBB2NvbnRlbnQCeHmHAgUABAACBgFhAA=="
+      ],
+      "yswiftRejects": 1,
+      "rejected": null,
+      "update": "AQYCAAcBB2NvbnRlbnQABAACAAJheYcCAgAEAAIDAmF5hwIFAAQAAgYBYQA="
+    },
+    {
+      "name": "resent_run_under_another_parent_without_gc",
+      "description": "lists nested through runs of the root resent after the list before",
+      "updates": [
+        "AQICAAcBB2NvbnRlbnQABAACAAFhAA==",
+        "AQMCAQQBB2NvbnRlbnQCeHmHAgIABAACAwFhAA==",
+        "AQMCBAQBB2NvbnRlbnQCeHmHAgUABAACBgFhAA=="
+      ],
+      "gc": false,
+      "yswiftRejects": 1,
+      "rejected": null,
+      "update": "AQYCAAcBB2NvbnRlbnQABAACAAJheYcCAgAEAAIDAmF5hwIFAAQAAgYBYQA="
+    },
+    {
+      "name": "resent_run_under_another_root",
+      "description": "a run of one root resent after a run of another",
+      "updates": [
+        "AQEBAAQBAWIBeAA=",
+        "AQECAAQBAWMDYWFhAA==",
+        "AQECAoQBAAR6enp6AA==",
+        "AAECAQAG"
+      ],
+      "yswiftRejects": 2,
+      "rejected": null,
+      "update": "AgECAAEBAWMGAQEABAEBYgF4AQIBAAY="
     },
     {
       "name": "pending_retry_throws_then_later_updates_apply",

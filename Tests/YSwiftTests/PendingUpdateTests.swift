@@ -27,19 +27,29 @@ struct PendingUpdateTests {
 
     @Test(
         "waiting structs merged as yjs merges them take the parent yjs gives them",
-        arguments: [([0, 1, 2, 3], 9, 24), ([3, 1, 0, 2], 13, 20), ([3, 1, 2, 0], 13, 20)]
+        arguments: [([0, 1, 2, 3], nil, 9, 24), ([3, 1, 0, 2], 2, 9, 20), ([3, 1, 2, 0], 0, 9, 20)]
+            as [([Int], Int?, Int, Int)]
     )
-    func mergesWaitingStructsAsYjs(order: [Int], lengthB: Int, lengthC: Int) throws {
-        // Yjs 13.6.31 ends every order with the same state, but not with the same lengths: in order 0123
-        // the waiting run is sliced when it merges, and its rest takes the parent of its new origin. The
-        // lengths are yjs's, including where they no longer count the characters.
+    func mergesWaitingStructsAsYjs(order: [Int], rejected: Int?, lengthB: Int, lengthC: Int) throws {
+        // Yjs 13.6.31 accepts every order and ends it with the same state. In order 0123 the waiting run is
+        // sliced when it merges, and its rest takes the parent of its new origin, as here. In the other
+        // orders a run resent from its middle follows a run of the other root, which yjs links in anyway,
+        // ending with lengths 13 and 20 that no longer count the characters; YSwift rejects that update.
         let doc = YDoc(clientID: 999)
+        var rejectedIndex: Int?
         for index in order {
-            try? doc.transact { try doc.applyUpdateChecked($0, Self.bytes(Self.resentRuns[index])) }
+            do {
+                try doc.transact { try doc.applyUpdateChecked($0, Self.bytes(Self.resentRuns[index])) }
+            } catch {
+                rejectedIndex = index
+            }
         }
+        #expect(rejectedIndex == rejected)
         doc.transact { txn in
             #expect(doc.text("b").length(txn) == lengthB)
             #expect(doc.text("c").length(txn) == lengthC)
+            #expect(doc.text("b").string(txn).utf16.count == lengthB)
+            #expect(doc.text("c").string(txn).utf16.count == lengthC)
             #expect(doc.hasPendingUpdates(txn) == false)
         }
     }

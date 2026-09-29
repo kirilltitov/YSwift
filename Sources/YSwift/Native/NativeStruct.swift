@@ -468,7 +468,7 @@ final class Item: Struct {
         if case .deleted = self.content {
             // ContentDeleted.integrate: the item arrives deleted and joins the transaction's delete
             // set in integration order, which an UndoManager's redo order follows.
-            store.deleteLog?.append((self.id.client, self.id.clock, self.length))
+            store.deleteSet?.add(self.id.client, self.id.clock, self.length)
             self.markDeleted()
         }
 

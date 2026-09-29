@@ -64,9 +64,8 @@ final class NativeStore {
         return right
     }
 
-    /// When non-nil, `deleteItem` logs `(client, clock, length)` for the deletes made
-    /// during the current transaction (used to build the emitted update's delete set).
-    var deleteLog: [(client: UInt64, clock: UInt64, length: UInt64)]?
+    /// When non-nil, the ids deleted during the current transaction (yjs `transaction.deleteSet`).
+    var deleteSet: DeleteSet?
     /// Whether `deleteItem` deleted an item, and a type, during the current transaction. Only these
     /// deletions leave content to collect (an item that arrives deleted holds none), and only a type's
     /// collection can fail (`collectionFails`).
@@ -155,7 +154,7 @@ final class NativeStore {
             item.markDeleted()
             self.deletedItemInTransaction = true
             self.version += 1
-            self.deleteLog?.append((item.id.client, item.id.clock, item.length))
+            self.deleteSet?.add(item.id.client, item.id.clock, item.length)
             if let name = item.parent?.name { self.changedTypeNames?.insert(name) }
             self.addChangedType(item.parent)
             self.checkChangedRootCompleteness(of: item)
@@ -292,38 +291,20 @@ final class NativeStore {
         return state
     }
 
-    /// Yjs `cleanupTransactions`: collects the transaction's delete set in every client first
-    /// (`tryGcDeleteSet`), then merges only what the transaction touched: around each delete range
-    /// (`tryMergeDeleteSet`), the structs it added, and around `mergeStructs`, in reverse. Merges within a
-    /// client do not depend on other clients, so the client order does not change the result.
-    func cleanup(gc: Bool, deletes: [(client: UInt64, clock: UInt64, length: UInt64)]) {
-        var deleteSet: [UInt64: [(clock: UInt64, length: UInt64)]] = [:]
-        var deleteClients: [UInt64] = []
-        for delete in deletes {
-            if deleteSet[delete.client] == nil { deleteClients.append(delete.client) }
-            deleteSet[delete.client, default: []].append((delete.clock, delete.length))
-        }
-        // `sortAndMergeDeleteSet`
-        for client in deleteClients {
-            var merged: [(clock: UInt64, length: UInt64)] = []
-            for range in deleteSet[client]!.sorted(by: { $0.clock < $1.clock }) {
-                if let last = merged.last, last.clock + last.length >= range.clock {
-                    merged[merged.count - 1].length = max(last.length, range.clock + range.length - last.clock)
-                } else {
-                    merged.append(range)
-                }
-            }
-            deleteSet[client] = merged
-        }
+    /// Yjs `cleanupTransactions`: collects the transaction's delete set, sorted and merged, in every
+    /// client first (`tryGcDeleteSet`), then merges only what the transaction touched: around each delete
+    /// range (`tryMergeDeleteSet`), the structs it added, and around `mergeStructs`, in reverse. Merges within
+    /// a client do not depend on other clients, so the client order does not change the result.
+    func cleanup(gc: Bool, deleteSet: DeleteSet) {
         if gc, self.deletedItemInTransaction {
-            for client in deleteClients { self.garbageCollect(client, deleteSet[client]!) }
+            for entry in deleteSet.clients { self.garbageCollect(entry.client, entry.ranges) }
         }
-        for client in deleteClients {
+        for entry in deleteSet.clients {
             // A range within the structs the transaction added is merged with them below: merging
             // adjacent structs gives the same structs in any order.
-            let before = self.transactionBeforeState[client] ?? 0
-            let added = self.getState(client) != before ? before : UInt64.max
-            self.mergeAround(&self.clients[client]!, deleteSet[client]!.lazy.filter { $0.clock < added })
+            let before = self.transactionBeforeState[entry.client] ?? 0
+            let added = self.getState(entry.client) != before ? before : UInt64.max
+            self.mergeAround(&self.clients[entry.client]!, entry.ranges.lazy.filter { $0.clock < added })
         }
         for client in self.clientOrder {
             let before = self.transactionBeforeState[client] ?? 0
@@ -441,18 +422,24 @@ final class NativeStore {
     /// runs out, and a child that is not deleted throws (`Item.gc`). The last happens without a cycle:
     /// yjs deletes only a key's current value with the type, but collects the whole key chain. Walks
     /// the types as yjs does, without changing them and without recursion.
-    func collectionFails(_ deletes: [(client: UInt64, clock: UInt64, length: UInt64)]) -> Bool {
+    ///
+    /// The answer does not depend on the order the types are walked in: it is whether any type reachable
+    /// from them has such a chain or child, or leads back into a type on the way to it, and a type is only
+    /// skipped once a walk through it found neither.
+    func collectionFails(_ deletes: DeleteSet) -> Bool {
         guard self.deletedTypeInTransaction else { return false }
         var collected = Set<ObjectIdentifier>()
-        for delete in deletes {
-            guard let structs = self.clients[delete.client] else { continue }
-            var index = self.findIndex(structs, delete.clock)
-            while index < structs.count, structs[index].id.clock < delete.clock + delete.length {
-                defer { index += 1 }
-                guard let item = structs[index] as? Item, item.deleted, !item.keep,
-                    case .type(let type, _, _) = item.content
-                else { continue }
-                if self.collectionFails(type, &collected) { return true }
+        for entry in deletes.clients {
+            guard let structs = self.clients[entry.client] else { continue }
+            for delete in entry.ranges {
+                var index = self.findIndex(structs, delete.clock)
+                while index < structs.count, structs[index].id.clock < delete.clock + delete.length {
+                    defer { index += 1 }
+                    guard let item = structs[index] as? Item, item.deleted, !item.keep,
+                        case .type(let type, _, _) = item.content
+                    else { continue }
+                    if self.collectionFails(type, &collected) { return true }
+                }
             }
         }
         return false

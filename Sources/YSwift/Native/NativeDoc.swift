@@ -116,7 +116,7 @@ final class NativeDoc {
             self.txnBeforeState = self.store.snapshotState()
             self.txnStartIntegratedCount = self.store.integratedCount
             self.txnStartSplitCount = self.store.splitCount
-            self.store.deleteLog = []
+            self.store.deleteSet = DeleteSet()
             self.store.deletedItemInTransaction = false
             self.store.deletedTypeInTransaction = false
             self.store.changedTypeNames = []
@@ -136,7 +136,9 @@ final class NativeDoc {
         guard self.txnDepth > 0 else { return }
         self.txnDepth -= 1
         guard self.txnDepth == 0 else { return }
-        let deletes = self.store.deleteLog ?? []
+        // `sortAndMergeDeleteSet`, before observers and handlers see the delete set.
+        self.store.deleteSet?.sortAndMerge()
+        let deletes = self.store.deleteSet ?? DeleteSet()
         let changed = self.store.changedTypeNames ?? []
         let origin = self.txnOrigin
         let beforeState = self.txnBeforeState
@@ -153,7 +155,7 @@ final class NativeDoc {
         if mutated, !self.afterTransactionHandlers.isEmpty {
             let info = TransactionInfo(
                 beforeState: beforeState, afterState: self.store.snapshotState(),
-                deletes: deletes, changedNames: changed,
+                deleteSet: deletes, changedNames: changed,
                 changedParentRootNames: self.store.changedParentRootNames(), origin: origin)
             for entry in self.afterTransactionHandlers { entry.handler(info) }
         }
@@ -162,9 +164,9 @@ final class NativeDoc {
         //    that only split items (e.g. an undo that found nothing to change) merges them back too,
         //    as yjs merges every transaction's `_mergeStructs`.
         if mutated || self.store.splitCount != self.txnStartSplitCount {
-            self.store.cleanup(gc: self.gc, deletes: deletes)
+            self.store.cleanup(gc: self.gc, deleteSet: deletes)
         }
-        self.store.deleteLog = nil
+        self.store.deleteSet = nil
         self.store.changedTypeNames = nil
         self.store.changedTypes = nil
         self.txnOrigin = nil
@@ -187,7 +189,8 @@ final class NativeDoc {
     struct TransactionInfo {
         let beforeState: [UInt64: UInt64]
         let afterState: [UInt64: UInt64]
-        let deletes: [(client: UInt64, clock: UInt64, length: UInt64)]
+        /// The transaction's delete set, sorted and merged.
+        let deleteSet: DeleteSet
         let changedNames: Set<String>
         /// The roots in yjs `transaction.changedParentTypes`: changed directly or through a type
         /// nested in them.
@@ -209,13 +212,9 @@ final class NativeDoc {
         self.afterTransactionHandlers.removeAll { $0.id == id }
     }
 
-    private func fireTextObservers(
-        changed: Set<String>, deletes: [(client: UInt64, clock: UInt64, length: UInt64)]
-    ) {
+    private func fireTextObservers(changed: Set<String>, deletes: DeleteSet) {
         guard !changed.isEmpty else { return }
-        func isDeleted(_ id: YID) -> Bool {
-            deletes.contains { $0.client == id.client && id.clock >= $0.clock && id.clock < $0.clock + $0.length }
-        }
+        func isDeleted(_ id: YID) -> Bool { deletes.contains(id) }
         for name in changed {
             let callbacks = self.observers.withLock { $0.byName[name] ?? [] }
             guard !callbacks.isEmpty, let type = share[name] else { continue }
@@ -237,46 +236,13 @@ final class NativeDoc {
     /// Encodes the update emitted by a transaction: structs added since
     /// `beforeState` plus the transaction's own (sorted, merged) delete set. Returns
     /// nil when nothing changed (`writeUpdateMessageFromTransaction`).
-    private func encodeTransactionUpdate(
-        beforeState: [UInt64: UInt64], deletes: [(client: UInt64, clock: UInt64, length: UInt64)]
-    ) -> [UInt8]? {
+    private func encodeTransactionUpdate(beforeState: [UInt64: UInt64], deletes: DeleteSet) -> [UInt8]? {
         let structsChanged = self.store.clients.keys.contains { self.store.getState($0) != (beforeState[$0] ?? 0) }
         guard structsChanged || !deletes.isEmpty else { return nil }
         var encoder = Lib0Encoder()
         self.writeClientsStructs(&encoder, target: beforeState)
-        self.writeTransactionDeleteSet(&encoder, deletes)
+        deletes.write(into: &encoder)
         return encoder.bytes
-    }
-
-    private func writeTransactionDeleteSet(
-        _ encoder: inout Lib0Encoder, _ deletes: [(client: UInt64, clock: UInt64, length: UInt64)]
-    ) {
-        var byClient: [UInt64: [(clock: UInt64, length: UInt64)]] = [:]
-        for delete in deletes { byClient[delete.client, default: []].append((delete.clock, delete.length)) }
-        var perClient: [(client: UInt64, ranges: [(clock: UInt64, length: UInt64)])] = []
-        for (client, ranges) in byClient {
-            let sorted = ranges.sorted { $0.clock < $1.clock }
-            var merged: [(clock: UInt64, length: UInt64)] = []
-            for range in sorted {
-                if let last = merged.last, last.clock + last.length >= range.clock {
-                    let end = max(last.clock + last.length, range.clock + range.length)
-                    merged[merged.count - 1] = (last.clock, end - last.clock)
-                } else {
-                    merged.append(range)
-                }
-            }
-            perClient.append((client, merged))
-        }
-        perClient.sort { $0.client > $1.client }
-        encoder.writeVarUint(UInt64(perClient.count))
-        for entry in perClient {
-            encoder.writeVarUint(entry.client)
-            encoder.writeVarUint(UInt64(entry.ranges.count))
-            for range in entry.ranges {
-                encoder.writeVarUint(range.clock)
-                encoder.writeVarUint(range.length)
-            }
-        }
     }
 
     // MARK: Apply
@@ -302,7 +268,7 @@ final class NativeDoc {
         try self.readUpdate(self.buildClientRefs(parsed.clientBlocks), deletes: deletes)
         // Yjs collects the transaction's deletions when it ends, and throws where that fails; this
         // update is rejected instead, as the commit that collects has no error to report.
-        if self.gc, let deletes = self.store.deleteLog, self.store.collectionFails(deletes) {
+        if self.gc, let deletes = self.store.deleteSet, self.store.collectionFails(deletes) {
             throw YError.invalidUpdate
         }
     }

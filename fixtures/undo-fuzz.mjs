@@ -12,10 +12,11 @@
 // minimiser) and the recorded ops are exactly what both sides execute.
 //
 // Usage: node undo-fuzz.mjs --suite --out ../Tests/YSwiftTests/Fixtures/undo_fuzz_v13_6_31.json
-//        node undo-fuzz.mjs [--from N] [--count N] [--noformat] [--singlekey] [--server] [--out path]
+//        node undo-fuzz.mjs [--from N] [--count N] [--noformat] [--singlekey] [--server] [--nested] [--out path]
 // --noformat drops formatting attributes and format ops; --singlekey keeps one key per attribute
 // set; --server uses only the sheets-api-shaped template, whose browser document is a JS peer (the
-// Swift runner feeds its recorded bytes). A larger corpus runs through UNDO_FUZZ_FIXTURE, e.g.
+// Swift runner feeds its recorded bytes); --nested uses only the nested type template. A larger
+// corpus runs through UNDO_FUZZ_FIXTURE, e.g.
 //   node undo-fuzz.mjs --from 1000 --count 3000 --noformat --out /tmp/nf.json
 //   UNDO_FUZZ_FIXTURE=/tmp/nf.json swift test --filter UndoFuzz
 
@@ -478,6 +479,156 @@ export function scenario(seed) {
   return HYDRATION || seed % 3 === 0 ? serverScenario(seed) : randomScenario(seed)
 }
 
+// --nested: Y.Map and Y.Array values embedded in the text and edited by JS peers, with every JS
+// peer's updates reaching the Swift documents out of order, several merged into one, or twice.
+function nestedText(rng) {
+  let s = ''
+  for (let i = 0, n = int(rng, 1, 6); i < n; i++) s += pick(rng, ALPHABET.split(''))
+  return s
+}
+
+function nestedTextOp(rng, sim, d, roots) {
+  const root = pick(rng, roots)
+  const len = sim.len(d, root)
+  const r = rng()
+  if (len === 0 || r < 0.45) return { op: 'insert', root, index: int(rng, 0, len), text: nestedText(rng) }
+  if (r < 0.8) {
+    const index = int(rng, 0, len - 1)
+    return { op: 'delete', root, index, length: int(rng, 1, Math.min(len - index, rng() < 0.6 ? 3 : 20)) }
+  }
+  return { op: 'embed', root, index: int(rng, 0, len), embed: { b: int(rng, 0, 9) } }
+}
+
+/** An op inside (or creating) a type embedded in root `t` of JS peer `d`. */
+function nestedTypeOp(rng, sim, d) {
+  const t = sim.docs[d].doc.getText('t')
+  const types = t.toDelta().filter((op) => op.insert instanceof Y.AbstractType)
+  if (types.length === 0 || rng() < 0.3) {
+    return { op: 'embedtype', root: 't', index: int(rng, 0, t.length), kind: rng() < 0.6 ? 'map' : 'array' }
+  }
+  const nth = int(rng, 0, types.length - 1)
+  const type = types[nth].insert
+  if (type instanceof Y.Map) {
+    const key = pick(rng, ['k0', 'k1', 'k2'])
+    if (rng() < 0.25 && type.has(key)) return { op: 'nested', root: 't', nth, del: key }
+    const v = rng()
+    return { op: 'nested', root: 't', nth, set: key, value: v < 0.2 ? [] : v < 0.6 ? int(rng, 0, 99) : nestedText(rng) }
+  }
+  if (type.length > 0 && rng() < 0.3) return { op: 'nested', root: 't', nth, del: int(rng, 0, type.length - 1) }
+  return { op: 'nested', root: 't', nth, push: rng() < 0.2 ? 'map' : nestedText(rng) }
+}
+
+export function nestedScenario(seed) {
+  const rng = makeRng(seed)
+  const nSwift = int(rng, 1, 2)
+  const nJs = int(rng, 1, 4)
+  const ids = new Set()
+  while (ids.size < nSwift + nJs) ids.add(rng() < 0.5 ? int(rng, 1, 30) : int(rng, 1, 0xffffffff))
+  const docs = [...ids].map((client, i) => (i < nSwift ? { client, gc: rng() < 0.75 } : { client, gc: rng() < 0.75, js: true }))
+  const swift = docs.map((_, i) => i).filter((i) => !docs[i].js)
+  const js = docs.map((_, i) => i).filter((i) => docs[i].js)
+  const roots = rng() < 0.7 ? ['t'] : ['t', 'u']
+  const ums = []
+  for (let d = 0; d < docs.length; d++) {
+    for (let i = 0, n = int(rng, 0, 2); i < n; i++) {
+      const o = rng()
+      const origins = o < 0.4 ? ['u'] : o < 0.7 ? ['r'] : ['u', 'r']
+      ums.push({ doc: d, root: pick(rng, roots), origins, timeout: rng() < 0.7 ? 0 : LONG_TIMEOUT })
+    }
+  }
+  const config = { seed, docs, roots, ums, nodelta: true }
+  const sim = new Sim(config)
+  const steps = []
+  const expect = []
+  const keep = (r) => {
+    if (r === null) return
+    steps.push(r.step)
+    expect.push(r.rec)
+  }
+  const push = (step) => {
+    try {
+      keep(sim.apply(step))
+    } catch (e) {
+      // A nested op that no longer fits: the JS peer's transaction still committed what ran.
+      if (step.k !== 'tx' || !docs[step.doc].js) throw e
+      keep(sim.finish(step, [step.doc]))
+    }
+  }
+  // Updates each JS peer emitted, per Swift document, not yet delivered to it.
+  const queue = new Map()
+  for (const p of js) for (const s of swift) queue.set(`${p}>${s}`, [])
+  const localStep = (d, step) => {
+    const before = sim.docs[d].log.length
+    push(step)
+    if (!docs[d].js) return
+    for (const u of sim.docs[d].log.slice(before)) for (const s of swift) queue.get(`${d}>${s}`).push(u)
+  }
+  const pending = (d) => sim.docs[d].doc.store.pendingStructs !== null || sim.docs[d].doc.store.pendingDs !== null
+  const deliver = (p, s, all) => {
+    const q = queue.get(`${p}>${s}`)
+    if (q.length === 0) return
+    let bytes
+    if (all) {
+      bytes = Y.mergeUpdates(q.splice(0).map((u) => Buffer.from(u, 'base64')))
+    } else if (rng() < 0.25 && q.length > 1) {
+      const chosen = []
+      for (let i = 0, k = int(rng, 2, Math.min(q.length, 4)); i < k; i++) chosen.push(q.splice(int(rng, 0, q.length - 1), 1)[0])
+      bytes = Y.mergeUpdates(chosen.map((u) => Buffer.from(u, 'base64')))
+    } else {
+      const i = rng() < 0.7 ? int(rng, 0, q.length - 1) : 0
+      const u = rng() < 0.1 ? q[i] : q.splice(i, 1)[0]
+      bytes = Buffer.from(u, 'base64')
+    }
+    const origin = rng() < 0.5 ? 'r' : null
+    Y.applyUpdate(sim.docs[s].doc, bytes, origin)
+    keep(sim.finish({ k: 'sync', from: p, to: s, origin }, [s], b64(bytes)))
+  }
+  for (let i = 0, n = int(rng, 15, 60); i < n; i++) {
+    const r = rng()
+    if (r < 0.4) {
+      const d = int(rng, 0, docs.length - 1)
+      const o = rng()
+      const origin = o < 0.5 ? 'u' : o < 0.65 ? 'r' : o < 0.85 ? null : 'x'
+      const ops = []
+      if (docs[d].js) {
+        // Nested ops are generated one at a time against the live document of the JS peer.
+        for (let j = 0, m = rng() < 0.8 ? 1 : int(rng, 2, 4); j < m; j++) {
+          ops.push(rng() < 0.55 ? nestedTypeOp(rng, sim, d) : nestedTextOp(rng, sim, d, roots))
+        }
+      } else {
+        const big = rng() < 0.05
+        for (let j = 0, m = big ? int(rng, 30, 150) : rng() < 0.8 ? int(rng, 1, 3) : int(rng, 4, 10); j < m; j++) {
+          ops.push(nestedTextOp(rng, sim, d, roots))
+        }
+      }
+      localStep(d, { k: 'tx', doc: d, origin, ops })
+    } else if (r < 0.55) {
+      if (ums.length === 0) continue
+      const um = int(rng, 0, ums.length - 1)
+      localStep(ums[um].doc, { k: rng() < 0.6 ? 'undo' : 'redo', um })
+    } else if (r < 0.6) {
+      if (ums.length === 0) continue
+      const um = int(rng, 0, ums.length - 1)
+      localStep(ums[um].doc, { k: 'stop', um })
+    } else if (r < 0.8) {
+      if (js.length === 0) continue
+      deliver(pick(rng, js), pick(rng, swift), false)
+    } else {
+      // Full state exchange, never JS -> JS, never from a Swift document holding pending data.
+      const from = int(rng, 0, docs.length - 1)
+      const to = int(rng, 0, docs.length - 1)
+      if (from === to || (docs[from].js && docs[to].js) || (!docs[from].js && pending(from))) continue
+      localStep(to, { k: 'sync', from, to, origin: rng() < 0.5 ? 'r' : null })
+    }
+  }
+  // Flush every queue, then exchange full states until every document converges.
+  for (const p of js) for (const s of swift) deliver(p, s, true)
+  for (const p of js) for (const s of swift) localStep(s, { k: 'sync', from: p, to: s, origin: null })
+  for (const a of swift) for (const b of swift) if (a !== b && !pending(a)) localStep(b, { k: 'sync', from: a, to: b, origin: null })
+  for (const s of swift) for (const p of js) if (!pending(s)) localStep(p, { k: 'sync', from: s, to: p, origin: null })
+  return { name: `nested_${seed}`, ...config, steps, expect, final: sim.final() }
+}
+
 // Minimised divergences of YSwift 0.4.0 from Yjs 13.6.31 undo/redo, replayed first by --suite.
 const REPROS = {
   redo_anchors_before_original: {"docs":[{"client":1,"gc":true}],"roots":["a"],"ums":[{"doc":0,"root":"a","origins":["u"],"timeout":0}],"steps":[{"k":"tx","doc":0,"origin":"u","ops":[{"op":"insert","root":"a","index":0,"text":"b"}]},{"k":"undo","um":0},{"k":"redo","um":0}]},
@@ -508,6 +659,7 @@ const um = (root, timeout = 0, doc = 0) => ({ doc, root, origins: ['o'], timeout
 const et = (index, kind) => ({ op: 'embedtype', root: 't', index, kind })
 const nset = (nth, set, value, path) => ({ op: 'nested', root: 't', nth, set, value, ...(path ? { path } : {}) })
 const npush = (nth, push) => ({ op: 'nested', root: 't', nth, push })
+const ndel = (nth, key) => ({ op: 'nested', root: 't', nth, del: key })
 const peer = (client) => ({ client, gc: true, js: true })
 const server = { client: 9, gc: true }
 const AUDIT = {
@@ -720,6 +872,29 @@ const AUDIT = {
   },
 }
 
+// A deleted map entry the cleanup merges into its left neighbour must become the key's current
+// value (Transaction.js tryToMergeWithLefts). The map collected by a later transaction then walks
+// the key's entries from the merged one; from the absorbed one it replaced the merged struct and
+// crashed. The key's delete and the map's delete reach the server in separate updates.
+const MERGED_ENTRY = {
+  merged_map_entry_then_map_deleted_locally: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, null, et(0, 'map'), nset(0, 'k', 1), nset(0, 'k', 2)), sync(0, 1), tx(0, null, ndel(0, 'k')),
+      sync(0, 1), tx(1, null, del('t', 0, 1))],
+  },
+  merged_map_entry_then_map_deleted_remotely: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, null, et(0, 'map'), nset(0, 'k', 1), nset(0, 'k', 2)), sync(0, 1), tx(0, null, ndel(0, 'k')),
+      sync(0, 1), tx(0, null, del('t', 0, 1)), sync(0, 1)],
+  },
+  // The sheets-api shape: the map sits between characters of a block's text.
+  merged_map_entry_then_map_deleted_in_text: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, null, ins('t', 0, 'ab'), et(1, 'map'), nset(0, 'k', 1), nset(0, 'k', 2)), sync(0, 1),
+      tx(0, null, ndel(0, 'k')), sync(0, 1), tx(1, null, del('t', 0, 3))],
+  },
+}
+
 export function suite(scenarios) {
   return { meta: { yjsVersion: YJS_VERSION, format: 'v1', generatedBy: 'undo-fuzz.mjs' }, scenarios }
 }
@@ -738,8 +913,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const scenarios = []
   if (process.argv.includes('--suite')) {
     // The committed regression corpus. Minimised repros and the audit scenarios first, one per
-    // undo/redo divergence of YSwift 0.4.0 (see REPROS and AUDIT above), then seeded scenarios.
-    for (const [name, spec] of [...Object.entries(REPROS), ...Object.entries(AUDIT)]) {
+    // undo/redo divergence of YSwift 0.4.0 (see REPROS and AUDIT above), then the merged map entry
+    // scenarios (MERGED_ENTRY), then seeded scenarios.
+    for (const [name, spec] of [...Object.entries(REPROS), ...Object.entries(AUDIT), ...Object.entries(MERGED_ENTRY)]) {
       const config = { seed: 0, docs: spec.docs, roots: spec.roots, ums: spec.ums, ...(spec.nodelta ? { nodelta: true } : {}) }
       scenarios.push(record(name, config, spec.steps))
     }
@@ -751,8 +927,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     setNoFormat(false)
     setSingleKey(true)
     for (let seed = 1; seed <= 60; seed++) scenarios.push(scenario(seed))
+    // Nested types with out-of-order delivery: two seeds that crashed YSwift in the cleanup.
+    for (const seed of [101860, 102498]) scenarios.push(nestedScenario(seed))
   } else {
-    for (let seed = from; seed < from + count; seed++) scenarios.push(scenario(seed))
+    const make = process.argv.includes('--nested') ? nestedScenario : scenario
+    for (let seed = from; seed < from + count; seed++) scenarios.push(make(seed))
   }
   writeFileSync(out, JSON.stringify(suite(scenarios)))
   const steps = scenarios.reduce((n, s) => n + s.steps.length, 0)

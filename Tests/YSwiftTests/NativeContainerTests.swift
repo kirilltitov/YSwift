@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 
 @testable import YSwift
@@ -29,6 +30,8 @@ private struct ContainerFixtures: Decodable {
         let name: String
         let clientID: UInt64
         let ops: [MapOp]
+        /// Present when every op ran in its own transaction: the update each one emitted.
+        let updates: [String]?
         let json: String
         let stateVector: String
         let update: String
@@ -117,15 +120,24 @@ struct NativeContainerTests {
         for fixture in try self.fixtures().map {
             let doc = self.doc(clientID: fixture.clientID)
             let map = doc.map("content")
-            doc.transact { txn in
-                for op in fixture.ops {
-                    switch op.op {
-                    case "set": map.set(txn, op.key, op.value ?? .null)
-                    case "delete": map.remove(txn, op.key)
-                    default: Issue.record("unknown map op \(op.op)")
-                    }
+            let emitted = Mutex<[String]>([])
+            let subscription = doc.onUpdate { update, _ in
+                emitted.withLock { $0.append(update.base64EncodedString()) }
+            }
+            func apply(_ op: ContainerFixtures.MapOp, _ txn: YTransaction) {
+                switch op.op {
+                case "set": map.set(txn, op.key, op.value ?? .null)
+                case "delete": map.remove(txn, op.key)
+                default: Issue.record("unknown map op \(op.op)")
                 }
             }
+            if let updates = fixture.updates {
+                for op in fixture.ops { doc.transact { apply(op, $0) } }
+                #expect(emitted.withLock { $0 } == updates, "\(fixture.name): updates")
+            } else {
+                doc.transact { txn in for op in fixture.ops { apply(op, txn) } }
+            }
+            subscription.cancel()
             doc.transact { txn in
                 #expect(doc.encodeStateAsUpdate(txn).base64EncodedString() == fixture.update, "\(fixture.name): update")
                 #expect(

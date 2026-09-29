@@ -584,6 +584,52 @@
       "json": "{\"b\":2}",
       "stateVector": "AekHAg==",
       "update": "AQLpBwAhAQdjb250ZW50AWEBKAEHY29udGVudAFiAX0CAekHAQAB"
+    },
+    {
+      "name": "map_merged_value_stays_current",
+      "description": "set/delete one key, one transaction per op",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "set",
+          "key": "k",
+          "value": 1
+        },
+        {
+          "op": "set",
+          "key": "k",
+          "value": 2
+        },
+        {
+          "op": "delete",
+          "key": "k"
+        },
+        {
+          "op": "set",
+          "key": "k",
+          "value": 3
+        },
+        {
+          "op": "delete",
+          "key": "k"
+        },
+        {
+          "op": "set",
+          "key": "k",
+          "value": 4
+        }
+      ],
+      "updates": [
+        "AQHpBwAoAQdjb250ZW50AWsBfQEA",
+        "AQHpBwGo6QcAAX0CAekHAQAB",
+        "AAHpBwEBAQ==",
+        "AQHpBwKo6QcBAX0DAA==",
+        "AAHpBwECAQ==",
+        "AQHpBwOo6QcCAX0EAA=="
+      ],
+      "json": "{\"k\":4}",
+      "stateVector": "AekHBA==",
+      "update": "AQLpBwAhAQdjb250ZW50AWsDqOkHAgF9BAHpBwEAAw=="
     }
   ],
   "xml": [

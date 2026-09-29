@@ -166,21 +166,29 @@ function arrayFixture(name, description, clientID, ops) {
   }
 }
 
-function mapFixture(name, description, clientID, ops) {
+/** Map ops in one transaction, or with `oneTransactionEach` one transaction per op, recording the
+ *  update each transaction emits. */
+function mapFixture(name, description, clientID, ops, oneTransactionEach = false) {
   const doc = new Y.Doc()
   doc.clientID = clientID
+  const updates = []
+  doc.on('update', (u) => updates.push(b64(u)))
   const m = doc.getMap(KEY)
-  doc.transact(() => {
-    for (const o of ops) {
-      switch (o.op) {
-        case 'set': m.set(o.key, o.value); break
-        case 'delete': m.delete(o.key); break
-        default: throw new Error(`unknown map op: ${o.op}`)
-      }
+  const apply = (o) => {
+    switch (o.op) {
+      case 'set': m.set(o.key, o.value); break
+      case 'delete': m.delete(o.key); break
+      default: throw new Error(`unknown map op: ${o.op}`)
     }
-  })
+  }
+  if (oneTransactionEach) {
+    for (const o of ops) doc.transact(() => apply(o))
+  } else {
+    doc.transact(() => { for (const o of ops) apply(o) })
+  }
   return {
     name, description, clientID, ops,
+    ...(oneTransactionEach ? { updates } : {}),
     json: JSON.stringify(m.toJSON()),
     stateVector: b64(Y.encodeStateVector(doc)),
     update: b64(Y.encodeStateAsUpdate(doc)),
@@ -256,6 +264,11 @@ const map = [
     [{ op: 'set', key: 'k', value: 1 }, { op: 'set', key: 'k', value: 2 }]),
   mapFixture('map_delete', 'set two keys, delete one', 1001,
     [{ op: 'set', key: 'a', value: 1 }, { op: 'set', key: 'b', value: 2 }, { op: 'delete', key: 'a' }]),
+  // A merge that absorbs a key's current value makes the merged item the current value
+  // (tryToMergeWithLefts), so the next set links to it and merges again.
+  mapFixture('map_merged_value_stays_current', 'set/delete one key, one transaction per op', 1001,
+    [{ op: 'set', key: 'k', value: 1 }, { op: 'set', key: 'k', value: 2 }, { op: 'delete', key: 'k' },
+     { op: 'set', key: 'k', value: 3 }, { op: 'delete', key: 'k' }, { op: 'set', key: 'k', value: 4 }], true),
 ]
 
 // --- Container convergence: concurrent multi-client edits must converge. ---

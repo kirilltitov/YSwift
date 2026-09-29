@@ -295,6 +295,12 @@ final class NativeStore {
         var index = pos
         while index > 0 {
             if left.isDeleted == right.isDeleted, type(of: left) == type(of: right), left.mergeWith(right) {
+                // The merged item takes over as the key's current value.
+                if let item = right as? Item, let key = item.parentSub, let parent = item.parent,
+                    parent.map[key] === item, let merged = left as? Item
+                {
+                    parent.map[key] = merged
+                }
                 index -= 1
                 right = left
                 if index > 0 { left = structs[index - 1] }

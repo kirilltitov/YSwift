@@ -226,11 +226,14 @@ struct CheckedUpdateTests {
 
     /// The peak resident size of this process, in bytes.
     private static func peakResidentBytes() -> Int {
+        #if os(Linux)
+        // `VmHWM:     1234 kB` in /proc/self/status.
+        let status = (try? String(contentsOfFile: "/proc/self/status", encoding: .utf8)) ?? ""
+        let line = status.split(separator: "\n").first { $0.hasPrefix("VmHWM:") } ?? ""
+        return (Int(line.split(separator: " ").dropFirst().first ?? "") ?? 0) * 1024
+        #else
         var usage = rusage()
         getrusage(RUSAGE_SELF, &usage)
-        #if os(Linux)
-        return usage.ru_maxrss * 1024
-        #else
         return usage.ru_maxrss
         #endif
     }

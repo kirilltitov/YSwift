@@ -295,18 +295,20 @@ final class NativeUndoManager {
         }
     }
 
-    /// `followRedone`: the latest copy of the item at `id` and the offset of `id` inside it.
+    /// `followRedone`: the latest copy of the item at `id` and the offset of `id` inside it. A chain of
+    /// copies that leads back into itself, which a malformed update can build, ends at the first repeat.
     private func followRedone(_ id: YID) -> (item: Struct, diff: UInt64) {
         var nextID: YID? = id
         var diff: UInt64 = 0
         var item: Struct
+        var seen = Set<ObjectIdentifier>()
         repeat {
             let current = nextID!
             if diff > 0 { nextID = YID(client: current.client, clock: current.clock + diff) }
             item = self.doc.store.getItem(nextID!)
             diff = nextID!.clock - item.id.clock
             nextID = (item as? Item)?.redone
-        } while nextID != nil && item is Item
+        } while nextID != nil && item is Item && seen.insert(ObjectIdentifier(item)).inserted
         return (item, diff)
     }
 
@@ -333,6 +335,10 @@ final class NativeUndoManager {
     }
 
     /// `redoItem` for an item whose parent is not deleted or already redone.
+    ///
+    /// A malformed update can link lists and key chains into each other so that the `redone`, `left` and
+    /// `right` links followed here lead back to where they started, where yjs loops without end. Each
+    /// walk stops at the first item it reaches twice, and the item then cannot be redone.
     private func redoItem(_ item: Item, itemsToDelete: DeleteSet) -> Struct? {
         let store = self.doc.store
         if let redone = item.redone { return store.getItemCleanStart(redone) }
@@ -340,7 +346,11 @@ final class NativeUndoManager {
         var parentItem = itemParent.item
         if let deletedParent = parentItem, deletedParent.deleted {
             guard deletedParent.redone != nil else { return nil }
-            while let redone = parentItem?.redone { parentItem = store.getItemCleanStart(redone) as? Item }
+            var seen = Set<ObjectIdentifier>()
+            while let current = parentItem, let redone = current.redone {
+                guard seen.insert(ObjectIdentifier(current)).inserted else { return nil }
+                parentItem = store.getItemCleanStart(redone) as? Item
+            }
         }
         let parentType: YTypeImpl
         if let parentItem {
@@ -353,7 +363,9 @@ final class NativeUndoManager {
         /// Follows `redone` links from `start` until an item in the (re-created) parent is found.
         func traceToParent(_ start: Item) -> Item? {
             var trace: Item? = start
+            var seen = Set<ObjectIdentifier>()
             while let current = trace, current.parent?.item !== parentItem {
+                guard seen.insert(ObjectIdentifier(current)).inserted else { return nil }
                 trace = current.redone.flatMap { store.getItemCleanStart($0) as? Item }
             }
             return trace
@@ -365,14 +377,18 @@ final class NativeUndoManager {
             // An array item: insert at the old position.
             left = item.left as? Item
             right = item
+            var seenLeft = Set<ObjectIdentifier>()
             while let current = left {
+                guard seenLeft.insert(ObjectIdentifier(current)).inserted else { return nil }
                 if let trace = traceToParent(current) {
                     left = trace
                     break
                 }
                 left = current.left as? Item
             }
+            var seenRight = Set<ObjectIdentifier>()
             while let current = right {
+                guard seenRight.insert(ObjectIdentifier(current)).inserted else { return nil }
                 if let trace = traceToParent(current) {
                     right = trace
                     break
@@ -382,6 +398,7 @@ final class NativeUndoManager {
         } else if let parentSub = item.parentSub {
             if item.right != nil {
                 left = item
+                var seen: Set<ObjectIdentifier> = [ObjectIdentifier(item)]
                 // Skip right neighbours that are re-created or deleted by this or a stacked step: the
                 // item is meant to replace them.
                 while let current = left, let next = current.right as? Item,
@@ -389,8 +406,12 @@ final class NativeUndoManager {
                         || self.undoStack.contains(where: { $0.deletions.contains(next.id) })
                         || self.redoStack.contains(where: { $0.deletions.contains(next.id) })
                 {
+                    guard seen.insert(ObjectIdentifier(next)).inserted else { return nil }
                     left = next
-                    while let redone = left?.redone { left = store.getItemCleanStart(redone) as? Item }
+                    while let current = left, let redone = current.redone {
+                        left = store.getItemCleanStart(redone) as? Item
+                        if let copy = left, !seen.insert(ObjectIdentifier(copy)).inserted { return nil }
+                    }
                 }
                 // A newer value from another client wins; the item cannot be redone.
                 if left?.right != nil { return nil }

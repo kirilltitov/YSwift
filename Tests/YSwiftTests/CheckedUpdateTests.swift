@@ -141,6 +141,7 @@ struct CheckedUpdateTests {
             let name: String
             let updates: [String]
             let tracked: Int?
+            let gc: Bool?
             let rejected: Int?
             let update: String?
             let xml: String?
@@ -148,7 +149,7 @@ struct CheckedUpdateTests {
         let malformed: [Case]
     }
 
-    private struct Replay: Sendable {
+    struct Replay: Sendable {
         var rejected: Int?
         var error: YError?
         var state: String
@@ -158,8 +159,8 @@ struct CheckedUpdateTests {
     /// Applies the updates to a fresh document one per transaction, as the fixture generator does, and
     /// drops the document before returning. With `tracked`, an UndoManager on the root tracks the updates
     /// from that index on and, once all are applied, undoes and redoes the last of them.
-    private static func replay(_ updates: [Data], tracked: Int? = nil) -> Replay {
-        let target = YDoc(clientID: 999)
+    static func replay(_ updates: [Data], tracked: Int? = nil, gc: Bool = true) -> Replay {
+        let target = YDoc(clientID: 999, gc: gc)
         let origin = Origin("r")
         let undoManager = tracked.map { _ in
             UndoManager(target.text("content"), trackedOrigins: [origin], captureTimeout: .zero)
@@ -183,8 +184,15 @@ struct CheckedUpdateTests {
     }
 
     /// Runs `body` on a thread with the 512 KiB stack of a Swift concurrency worker, so that a recursion
-    /// as deep as the input overflows the same way wherever the suite runs.
-    private static func onWorkerSizedStack<T: Sendable>(_ body: @escaping @Sendable () -> T) -> T {
+    /// as deep as the input overflows the same way wherever the suite runs. A body that runs for longer
+    /// than `seconds` or raises the peak resident size by more than `megabytes` ends the test process:
+    /// an input that makes the document loop fails the run instead of hanging it or exhausting memory.
+    static func onWorkerSizedStack<T: Sendable>(
+        _ label: String = "",
+        seconds: Double = 20,
+        megabytes: Int = 512,
+        _ body: @escaping @Sendable () -> T,
+    ) -> T {
         let result = Mutex<T?>(nil)
         let done = DispatchSemaphore(value: 0)
         let thread = Thread {
@@ -193,8 +201,15 @@ struct CheckedUpdateTests {
             done.signal()
         }
         thread.stackSize = 512 * 1024
+        let peak = Self.peakResidentBytes()
+        let deadline = Date(timeIntervalSinceNow: seconds)
         thread.start()
-        done.wait()
+        while done.wait(timeout: .now() + .milliseconds(20)) == .timedOut {
+            guard Date() < deadline, Self.peakResidentBytes() - peak < megabytes << 20 else {
+                print("\(label) did not finish within \(seconds) s and \(megabytes) MiB")
+                exit(EXIT_FAILURE)
+            }
+        }
         return result.withLock { $0! }
     }
 
@@ -210,7 +225,8 @@ struct CheckedUpdateTests {
         for fixture in try Self.malformedFixtures() {
             let updates = try fixture.updates.map { try #require(Data(base64Encoded: $0)) }
             let tracked = fixture.tracked
-            let replay = Self.onWorkerSizedStack { Self.replay(updates, tracked: tracked) }
+            let gc = fixture.gc ?? true
+            let replay = Self.onWorkerSizedStack(fixture.name) { Self.replay(updates, tracked: tracked, gc: gc) }
             #expect(replay.rejected == fixture.rejected, "\(fixture.name): rejected update")
             if replay.rejected != nil {
                 #expect(replay.error == .invalidUpdate, "\(fixture.name)")
@@ -225,7 +241,7 @@ struct CheckedUpdateTests {
     }
 
     /// The peak resident size of this process, in bytes.
-    private static func peakResidentBytes() -> Int {
+    static func peakResidentBytes() -> Int {
         #if os(Linux)
         // `VmHWM:     1234 kB` in /proc/self/status.
         let status = (try? String(contentsOfFile: "/proc/self/status", encoding: .utf8)) ?? ""

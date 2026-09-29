@@ -1347,6 +1347,27 @@
       "update": "AQIFAAQBB2NvbnRlbnQCYWIAAQEFAQIB"
     },
     {
+      "name": "entry_resent_after_its_map_collected",
+      "description": "a resent entry of a map linked after the map itself",
+      "updates": [
+        "AQEFAAcBB2NvbnRlbnQBAA==",
+        "AQEFACEABQABbAIA"
+      ],
+      "rejected": 1,
+      "update": null
+    },
+    {
+      "name": "entry_resent_after_its_map_kept",
+      "description": "the same without gc",
+      "updates": [
+        "AQEFAAcBB2NvbnRlbnQBAA==",
+        "AQEFACEABQABbAIA"
+      ],
+      "gc": false,
+      "rejected": null,
+      "update": "AQIFAAcBB2NvbnRlbnQBoQUAAQEFAQAC"
+    },
+    {
       "name": "nested_elements",
       "description": "1000 XML elements, each a child of the one before",
       "updates": [

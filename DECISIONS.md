@@ -79,6 +79,22 @@ remains the frozen contract established during the migration to native Swift.
   instead of stopping the process. As in yjs `addStackToRestSS`, the structs of
   a client that follow an item waiting for a dependency wait with it and are not
   looked at until it arrives. Pinned by the `malformed` golden vectors.
+- **What yjs fails to collect is rejected.** A run sent again is linked in after
+  the struct just before its first new clock whatever that struct's parent, in
+  yjs as here, so a malformed update can thread one list or key chain into
+  another until it leads back into itself. Yjs collects a deleted type's
+  children recursively when the transaction ends, and there loops without end
+  or overflows its stack. With `gc`, `applyUpdateChecked` rejects an update
+  after which collecting the transaction's deletions would do so; without
+  `gc` nothing is collected and the update is accepted, as in yjs. The check
+  runs before commit, so it does not see the protection an `UndoManager`
+  tracking the update gives its deletions only then: with such a manager
+  YSwift rejects an update yjs accepts and never collects. Every walk over
+  such chains (collect, delete, `UndoManager` redo) stops at the first item it
+  reaches twice. Undo and redo have no error to report: an item whose chains
+  lead back into themselves is not redone, where yjs loops without end. Pinned
+  by the `entry_resent_after_its_map_*` malformed golden vectors and
+  `CheckedUpdateTests+Cycles`.
 - **A remote deletion reaching more than 4096 levels of nested types is
   rejected.** Yjs deletes and collects a type's children recursively and
   throws a `RangeError` once the stack runs out: Yjs 13.6.31 on Node 26 with

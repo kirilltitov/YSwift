@@ -538,6 +538,9 @@ const stringAfter = (client, clock, text) => [0x84, ...varUint(client), ...varUi
 const stringBefore = (client, clock, text) => [0x44, ...varUint(client), ...varUint(clock), ...varString(text)]
 const embedAfter = (client, clock, json) => [0x85, ...varUint(client), ...varUint(clock), ...varString(json)]
 const mapEntryIn = (client, clock, key) => [0x28, 0, ...varUint(client), ...varUint(clock), ...varString(key), 1, 125, 1]
+/** Deleted content of `length` clocks, an entry `key` of the type at `parent` (a client and a clock). */
+const deletedEntryIn = (client, clock, key, length) =>
+  [0x21, 0, ...varUint(client), ...varUint(clock), ...varString(key), ...varUint(length)]
 /** An update without structs, deleting `ranges` ([clock, length] pairs) of one client. */
 const deleteRanges = (client, ranges) => b64(new Uint8Array([
   0, 1, ...varUint(client), ...varUint(ranges.length), ...ranges.flatMap(([clock, length]) => [...varUint(clock), ...varUint(length)]),
@@ -580,9 +583,9 @@ const nestedChain = (client, depth, map) => rawUpdate(client, 0, Array.from({ le
 
 /** With `tracked`, an UndoManager on the root tracks the updates from that index on (origin `r`) and,
  *  once all are applied, undoes and redoes the last of them. With `xml`, the root's XML string is
- *  recorded too. */
-function malformedFixture(name, description, updates, { tracked = null, xml = false } = {}) {
-  const doc = new Y.Doc()
+ *  recorded too. `gc: false` replays into a document that keeps deleted content. */
+function malformedFixture(name, description, updates, { tracked = null, xml = false, gc = true } = {}) {
+  const doc = new Y.Doc({ gc })
   doc.clientID = 999
   const um = tracked === null
     ? null
@@ -601,7 +604,7 @@ function malformedFixture(name, description, updates, { tracked = null, xml = fa
     um.redo()
   }
   return {
-    name, description, updates, ...(tracked === null ? {} : { tracked }),
+    name, description, updates, ...(tracked === null ? {} : { tracked }), ...(gc ? {} : { gc }),
     rejected, update: rejected === null ? b64(Y.encodeStateAsUpdate(doc)) : null,
     ...(xml && rejected === null ? { xml: doc.getXmlFragment(KEY).toString() } : {}),
   }
@@ -635,6 +638,14 @@ const malformed = [
     rawUpdate(5, 0, [rootString('abcdef')]), rawUpdate(5, 0, [stringAfter(5, 3, 'abcdefghij')])]),
   malformedFixture('parent_not_a_type', 'parent at a string item: the item is collected', [
     rawUpdate(5, 0, [rootString('ab'), mapEntryIn(5, 0, 'k')])]),
+  // A run sent again is linked in after the struct just before its first new clock, whatever that
+  // struct's parent. Here it is the map's own item, which the new entry then replaces and deletes:
+  // collecting the map walks from the entry back into the map without end, and yjs overflows its
+  // stack. Without gc nothing is collected and yjs accepts it.
+  malformedFixture('entry_resent_after_its_map_collected', 'a resent entry of a map linked after the map itself', [
+    rawUpdate(5, 0, [rootMapType()]), rawUpdate(5, 0, [deletedEntryIn(5, 0, 'l', 2)])]),
+  malformedFixture('entry_resent_after_its_map_kept', 'the same without gc', [
+    rawUpdate(5, 0, [rootMapType()]), rawUpdate(5, 0, [deletedEntryIn(5, 0, 'l', 2)])], { gc: false }),
   // Size and depth: yjs accepts these; the document must survive them, and being dropped.
   // Yjs renders nested elements recursively and throws from 1172 levels on; YSwift renders any depth.
   malformedFixture('nested_elements', '1000 XML elements, each a child of the one before', [nestedElements(1000)],

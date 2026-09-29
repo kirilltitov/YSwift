@@ -104,9 +104,10 @@ final class NativeStore {
     static let remoteDeletionDepthLimit = 4096
 
     /// Set while a remote update is applied: a deletion reaching deeper than
-    /// `remoteDeletionDepthLimit` then sets `deletionTooDeep`, for the update to be rejected.
+    /// `remoteDeletionDepthLimit`, or a type's list that leads back into itself (yjs deletes along it
+    /// without end), then sets `remoteDeletionFailed`, for the update to be rejected.
     var limitsDeletionDepth = false
-    var deletionTooDeep = false
+    var remoteDeletionFailed = false
 
     /// Marks `item` deleted, keeps parent length in sync, and records the deletion
     /// for the active transaction (`Item.delete`).
@@ -117,7 +118,7 @@ final class NativeStore {
         var pending: [(item: Item, depth: Int)] = [(item, 1)]
         while let (item, depth) = pending.popLast() {
             guard !item.deleted else { continue }
-            if self.limitsDeletionDepth, depth > Self.remoteDeletionDepthLimit { self.deletionTooDeep = true }
+            if self.limitsDeletionDepth, depth > Self.remoteDeletionDepthLimit { self.remoteDeletionFailed = true }
             if item.countable, item.parentSub == nil {
                 item.parent?.length -= Int(item.length)
             }
@@ -129,8 +130,13 @@ final class NativeStore {
             self.checkChangedRootCompleteness(of: item)
             if case .type(let type, _, _) = item.content {
                 var children: [Item] = []
+                var listed = Set<ObjectIdentifier>()
                 var child = type.start
                 while let current = child {
+                    guard listed.insert(ObjectIdentifier(current)).inserted else {
+                        if self.limitsDeletionDepth { self.remoteDeletionFailed = true }
+                        break
+                    }
                     children.append(current)
                     child = current.right as? Item
                 }
@@ -281,21 +287,26 @@ final class NativeStore {
     /// the type holding it is collected. A collected type's children go first (`ContentType.gc`):
     /// once the type is gone they have no parent to be encoded with. A work list does so without a
     /// stack frame per level of nesting.
+    ///
+    /// Every item is collected once: a list or key chain that leads back into itself or into a type
+    /// being collected, which `collectionFails` rejects in remote updates, would otherwise grow the
+    /// work list without end.
     private func collect(_ item: Item, parentGCd: Bool) {
         var pending: [(item: Item, parentGCd: Bool, childrenCollected: Bool)] = [(item, parentGCd, false)]
+        var visited: Set<ObjectIdentifier> = [ObjectIdentifier(item)]
         while let (item, parentGCd, childrenCollected) = pending.popLast() {
             if case .type(let type, _, _) = item.content {
                 guard childrenCollected else {
                     pending.append((item, parentGCd, true))
                     var children: [Item] = []
                     var child = type.start
-                    while let current = child {
+                    while let current = child, visited.insert(ObjectIdentifier(current)).inserted {
                         children.append(current)
                         child = current.right as? Item
                     }
                     for latest in type.map.values {
                         var entry: Item? = latest
-                        while let current = entry {
+                        while let current = entry, visited.insert(ObjectIdentifier(current)).inserted {
                             children.append(current)
                             entry = current.left as? Item
                         }
@@ -315,6 +326,73 @@ final class NativeStore {
                 item.content = .deleted(item.length)
             }
         }
+    }
+
+    /// Whether collecting the unprotected types among `deletes` fails in yjs, which collects a type's
+    /// children recursively (`ContentType.gc`): a list or key chain that leads back into itself loops
+    /// there without end, and a type reached again while it is being collected recurses until the
+    /// stack runs out. Walks the types as yjs does, without changing them and without recursion.
+    func collectionFails(_ deletes: [(client: UInt64, clock: UInt64, length: UInt64)]) -> Bool {
+        var collected = Set<ObjectIdentifier>()
+        for delete in deletes {
+            guard let structs = self.clients[delete.client] else { continue }
+            var index = self.findIndex(structs, delete.clock)
+            while index < structs.count, structs[index].id.clock < delete.clock + delete.length {
+                defer { index += 1 }
+                guard let item = structs[index] as? Item, item.deleted, !item.keep,
+                    case .type(let type, _, _) = item.content
+                else { continue }
+                if self.collectionFails(type, &collected) { return true }
+            }
+        }
+        return false
+    }
+
+    /// `collectionFails` for one type and the types nested in it. `collected` holds the types already
+    /// walked: yjs has emptied them.
+    private func collectionFails(_ root: YTypeImpl, _ collected: inout Set<ObjectIdentifier>) -> Bool {
+        guard !collected.contains(ObjectIdentifier(root)) else { return false }
+        // The types being collected, outermost first, each with its children and the next one to visit.
+        var walk: [(type: YTypeImpl, children: [Item], next: Int)] = []
+        var walking = Set<ObjectIdentifier>()
+        /// Starts collecting `type`; false if one of its chains leads back into itself.
+        func enter(_ type: YTypeImpl) -> Bool {
+            var children: [Item] = []
+            var seen = Set<ObjectIdentifier>()
+            var child = type.start
+            while let current = child {
+                guard seen.insert(ObjectIdentifier(current)).inserted else { return false }
+                children.append(current)
+                child = current.right as? Item
+            }
+            for key in type.mapKeys {
+                seen.removeAll(keepingCapacity: true)
+                var entry = type.map[key]
+                while let current = entry {
+                    guard seen.insert(ObjectIdentifier(current)).inserted else { return false }
+                    children.append(current)
+                    entry = current.left as? Item
+                }
+            }
+            walk.append((type, children, 0))
+            walking.insert(ObjectIdentifier(type))
+            return true
+        }
+        guard enter(root) else { return true }
+        while let top = walk.last {
+            guard top.next < top.children.count else {
+                walk.removeLast()
+                walking.remove(ObjectIdentifier(top.type))
+                collected.insert(ObjectIdentifier(top.type))
+                continue
+            }
+            walk[walk.count - 1].next += 1
+            guard case .type(let nested, _, _) = top.children[top.next].content,
+                !collected.contains(ObjectIdentifier(nested))
+            else { continue }
+            guard !walking.contains(ObjectIdentifier(nested)), enter(nested) else { return true }
+        }
+        return false
     }
 
     private func mergeClient(_ client: UInt64) {

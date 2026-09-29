@@ -279,6 +279,11 @@ final class NativeDoc {
     func applyUpdate(_ bytes: [UInt8]) throws {
         if try self.integrate(bytes) { self.pendingUpdates.append(bytes) }
         try self.retryPending()
+        // Yjs collects the transaction's deletions when it ends, and throws where that fails; this
+        // update is rejected instead, as the commit that collects has no error to report.
+        if self.gc, let deletes = self.store.deleteLog, self.store.collectionFails(deletes) {
+            throw YError.invalidUpdate
+        }
     }
 
     /// Integrates one update in place. Returns true if some structs or deletes were
@@ -289,12 +294,12 @@ final class NativeDoc {
         // Where yjs runs out of stack deleting nested types, the update is rejected, as it is there
         // once partly applied.
         self.store.limitsDeletionDepth = true
-        self.store.deletionTooDeep = false
+        self.store.remoteDeletionFailed = false
         defer { self.store.limitsDeletionDepth = false }
         let structsDropped = try self.integrateStructs(refs)
-        guard !self.store.deletionTooDeep else { throw YError.invalidUpdate }
+        guard !self.store.remoteDeletionFailed else { throw YError.invalidUpdate }
         let deletesDropped = self.store.applyDeleteSet(parsed.deleteSet)
-        guard !self.store.deletionTooDeep else { throw YError.invalidUpdate }
+        guard !self.store.remoteDeletionFailed else { throw YError.invalidUpdate }
         return structsDropped || deletesDropped
     }
 

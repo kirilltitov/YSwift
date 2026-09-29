@@ -29,7 +29,7 @@ extension CheckedUpdateTests {
             for update in updates { try? doc.applyUpdate(update) }
             var deletes = DeleteSet()
             deletes.add(5, 0, 2)
-            doc.store.cleanup(gc: true, deleteSet: deletes)
+            doc.store.cleanup(gc: true, deleteSet: deletes, changes: doc.store.transactionChanges())
         }
     }
 

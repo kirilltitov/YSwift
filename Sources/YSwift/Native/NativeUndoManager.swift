@@ -91,9 +91,8 @@ final class NativeUndoManager {
 
         // `transaction.afterState` iterates the store's clients in insertion order.
         var insertions = DeleteSet()
-        for client in self.doc.store.clientOrder {
-            let before = info.beforeState[client] ?? 0
-            if let after = info.afterState[client], after > before { insertions.add(client, before, after - before) }
+        for change in info.changes where change.after > change.before {
+            insertions.add(change.client, change.before, change.after - change.before)
         }
         // `transaction.deleteSet`, sorted and merged by the transaction cleanup before yjs calls
         // `afterTransaction` handlers.

@@ -6,9 +6,9 @@
 final class NativeStore {
     /// Per-client structs, clock-ascending. The sole strong owner of every struct.
     var clients: [UInt64: [Struct]] = [:]
-    /// Clients in the order their first struct arrived: the iteration order of the yjs
+    /// Each client's position in the order its first struct arrived: the iteration order of the yjs
     /// `store.clients` Map, which `getStateVector` (and so an UndoManager's insertions) follows.
-    private(set) var clientOrder: [UInt64] = []
+    private var clientRank: [UInt64: Int] = [:]
 
     /// Bumped on every item split, so a transaction that only split items still merges them back
     /// on commit, as yjs does through `transaction._mergeStructs`.
@@ -81,13 +81,30 @@ final class NativeStore {
 
     /// When non-nil, the types changed during the current transaction, recorded under the rule of
     /// yjs `addChangedTypeToTransaction`: a nested type counts only if its item existed before the
-    /// transaction (`transactionBeforeState`) and is not deleted.
+    /// transaction (`beforeState`) and is not deleted.
     var changedTypes: [ObjectIdentifier: YTypeImpl]?
+
+    /// The clock of every client the current transaction added structs to, as it was before the
+    /// transaction (yjs `transaction.beforeState` for the clients that changed). Recorded by
+    /// `addStruct`; the transaction resets it.
     var transactionBeforeState: [UInt64: UInt64] = [:]
+
+    /// `client`'s clock before the current transaction: a client it added nothing to is unchanged.
+    func beforeState(_ client: UInt64) -> UInt64 {
+        self.transactionBeforeState[client] ?? self.getState(client)
+    }
+
+    /// The clients the current transaction added structs to, with their clocks before and after,
+    /// in the order of the yjs `store.clients` Map that `transaction.afterState` follows.
+    func transactionChanges() -> [(client: UInt64, before: UInt64, after: UInt64)] {
+        self.transactionBeforeState
+            .map { (client: $0.key, before: $0.value, after: self.getState($0.key)) }
+            .sorted { self.clientRank[$0.client]! < self.clientRank[$1.client]! }
+    }
 
     private func addChangedType(_ type: YTypeImpl?) {
         guard self.changedTypes != nil, let type else { return }
-        if let item = type.item, item.deleted || item.id.clock >= self.transactionBeforeState[item.id.client] ?? 0 {
+        if let item = type.item, item.deleted || item.id.clock >= self.beforeState(item.id.client) {
             return
         }
         self.changedTypes?[ObjectIdentifier(type)] = type
@@ -142,7 +159,7 @@ final class NativeStore {
             guard !item.deleted else {
                 // `ContentType.delete`: a child deleted before this transaction is in no delete set of
                 // it, yet it is collected with the type; queue it so the cleanup merges it.
-                if depth > 1, item.id.clock < self.transactionBeforeState[item.id.client] ?? 0 {
+                if depth > 1, item.id.clock < self.beforeState(item.id.client) {
                     self.mergeStructs.append(item.id)
                 }
                 continue
@@ -192,18 +209,15 @@ final class NativeStore {
         self.clients.keys.sorted(by: >).map { (client: $0, clock: self.getState($0)) }
     }
 
-    /// Monotonic count of structs integrated via `addStruct` — used to detect
-    /// progress when retrying buffered (out-of-order) updates.
-    private(set) var integratedCount = 0
-
     /// Bumped on every structural change (insert / delete) so cached search markers
     /// can tell when they are stale.
     private(set) var version = 0
 
     func addStruct(_ struct: Struct) {
-        if clients[`struct`.id.client] == nil { self.clientOrder.append(`struct`.id.client) }
-        clients[`struct`.id.client, default: []].append(`struct`)
-        self.integratedCount += 1
+        let client = `struct`.id.client
+        if self.transactionBeforeState[client] == nil { self.transactionBeforeState[client] = self.getState(client) }
+        if clients[client] == nil { self.clientRank[client] = self.clientRank.count }
+        clients[client, default: []].append(`struct`)
         self.version += 1
         if let name = (`struct` as? Item)?.parent?.name { self.changedTypeNames?.insert(name) }
         if let item = `struct` as? Item {
@@ -284,32 +298,23 @@ final class NativeStore {
         return index
     }
 
-    /// Snapshot of `client -> next clock` for every known client.
-    func snapshotState() -> [UInt64: UInt64] {
-        var state: [UInt64: UInt64] = [:]
-        for client in self.clients.keys { state[client] = self.getState(client) }
-        return state
-    }
-
     /// Yjs `cleanupTransactions`: collects the transaction's delete set, sorted and merged, in every
     /// client first (`tryGcDeleteSet`), then merges only what the transaction touched: around each delete
-    /// range (`tryMergeDeleteSet`), the structs it added, and around `mergeStructs`, in reverse. Merges within
-    /// a client do not depend on other clients, so the client order does not change the result.
-    func cleanup(gc: Bool, deleteSet: DeleteSet) {
+    /// range (`tryMergeDeleteSet`), the structs it added (`changes`), and around `mergeStructs`, in reverse.
+    /// Merges within a client do not depend on other clients, so the client order does not change the result.
+    func cleanup(gc: Bool, deleteSet: DeleteSet, changes: [(client: UInt64, before: UInt64, after: UInt64)]) {
         if gc, self.deletedItemInTransaction {
             for entry in deleteSet.clients { self.garbageCollect(entry.client, entry.ranges) }
         }
         for entry in deleteSet.clients {
             // A range within the structs the transaction added is merged with them below: merging
             // adjacent structs gives the same structs in any order.
-            let before = self.transactionBeforeState[entry.client] ?? 0
+            let before = self.beforeState(entry.client)
             let added = self.getState(entry.client) != before ? before : UInt64.max
             self.mergeAround(&self.clients[entry.client]!, entry.ranges.lazy.filter { $0.clock < added })
         }
-        for client in self.clientOrder {
-            let before = self.transactionBeforeState[client] ?? 0
-            guard self.getState(client) != before else { continue }
-            self.mergeFrom(&self.clients[client]!, before)
+        for change in changes where change.after != change.before {
+            self.mergeFrom(&self.clients[change.client]!, change.before)
         }
         for id in self.mergeStructs.reversed() {
             let position = self.findIndex(self.clients[id.client]!, id.clock)
@@ -528,7 +533,7 @@ final class NativeStore {
     func applyDeleteSet(_ deleteSet: DeleteRanges) -> DeleteRanges {
         var unapplied: DeleteRanges = []
         // The store's arrays are changed in place, one short access at a time: a local copy of a client's
-        // array was copied again by its first split.
+        // array was copied again by its first split, and `deleteItem` reads the store too.
         for client in deleteSet {
             let id = client.client
             var rest: [(clock: UInt64, length: UInt64)] = []

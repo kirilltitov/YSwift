@@ -515,9 +515,71 @@ const semantic = [
   ),
 ]
 
+// --- Malformed references: hand-built v1 updates, applied to one document one per transaction. ---
+// Yjs resolves an item's references to its own client without checking them against the state, so
+// a reference to a clock that client has not reached makes the lookup throw. `rejected` is the
+// index of the update Yjs throws on (null when it accepts all); `update` is the state it ends with.
+
+const varUint = (n) => { const out = []; while (n > 127) { out.push(0x80 | (n & 127)); n = Math.floor(n / 128) } out.push(n); return out }
+const varString = (s) => { const bytes = [...Buffer.from(s, 'utf8')]; return [...varUint(bytes.length), ...bytes] }
+/** One client's structs from `clock` on, and an empty delete set. */
+const rawUpdate = (client, clock, structs) =>
+  b64(new Uint8Array([1, ...varUint(structs.length), ...varUint(client), ...varUint(clock), ...structs.flat(), 0]))
+const rootString = (text) => [0x04, 1, ...varString(KEY), ...varString(text)]
+const rootMapType = () => [0x07, 1, ...varString(KEY), 1]
+const stringAfter = (client, clock, text) => [0x84, ...varUint(client), ...varUint(clock), ...varString(text)]
+const stringBefore = (client, clock, text) => [0x44, ...varUint(client), ...varUint(clock), ...varString(text)]
+const embedAfter = (client, clock, json) => [0x85, ...varUint(client), ...varUint(clock), ...varString(json)]
+const mapEntryIn = (client, clock, key) => [0x28, 0, ...varUint(client), ...varUint(clock), ...varString(key), 1, 125, 1]
+
+function malformedFixture(name, description, updates) {
+  const doc = new Y.Doc()
+  doc.clientID = 999
+  let rejected = null
+  for (const [index, update] of updates.entries()) {
+    try {
+      Y.applyUpdate(doc, Buffer.from(update, 'base64'))
+    } catch {
+      rejected = index
+      break
+    }
+  }
+  return { name, description, updates, rejected, update: rejected === null ? b64(Y.encodeStateAsUpdate(doc)) : null }
+}
+
+const malformed = [
+  malformedFixture('origin_own_client_future', 'left origin at a clock of its own client not reached yet', [
+    rawUpdate(5, 0, [rootString('a'), stringAfter(5, 10, 'b')])]),
+  malformedFixture('origin_own_client_future_in_later_update', 'the same, the item arriving in a later update', [
+    rawUpdate(5, 0, [rootString('a')]), rawUpdate(5, 1, [stringAfter(5, 10, 'b')])]),
+  malformedFixture('origin_own_client_future_past_a_run', 'left origin past a run the document holds', [
+    rawUpdate(5, 0, [rootString('a'), embedAfter(5, 0, '{"b":1}'), stringAfter(5, 1, 'bcdefghij')]),
+    rawUpdate(5, 11, [stringAfter(5, 13, 'x')])]),
+  // The bad item waits behind its client's item with a missing dependency, as the rest of that
+  // client's structs do; a later update for the same clocks does not expose it, the dependency does.
+  malformedFixture('origin_own_client_future_behind_a_missing_dependency', 'the same, set aside with a waiting item', [
+    rawUpdate(5, 0, [rootString('a')]), rawUpdate(5, 1, [stringAfter(6, 0, 'b'), stringAfter(5, 10, 'c')]),
+    rawUpdate(5, 1, [stringAfter(5, 0, 'b'), stringAfter(5, 1, 'c')]), rawUpdate(6, 0, [rootString('x')])]),
+  malformedFixture('origin_own_client_unknown', 'left origin at a client the document has never seen', [
+    rawUpdate(5, 0, [stringAfter(5, 3, 'a')])]),
+  malformedFixture('origin_self', 'left origin at the item itself', [rawUpdate(5, 0, [stringAfter(5, 0, 'a')])]),
+  malformedFixture('right_origin_own_client_future', 'right origin at a clock of its own client not reached yet', [
+    rawUpdate(5, 0, [rootString('a'), stringBefore(5, 10, 'b')])]),
+  malformedFixture('parent_own_client_future', 'parent at a clock of its own client not reached yet', [
+    rawUpdate(5, 0, [rootMapType(), mapEntryIn(5, 10, 'k')])]),
+  malformedFixture('parent_self', 'parent at the item itself', [rawUpdate(5, 0, [mapEntryIn(5, 0, 'k')])]),
+  // Accepted: the references resolve.
+  malformedFixture('origin_other_client', 'left origin at another client, present', [
+    rawUpdate(5, 0, [rootString('a')]), rawUpdate(6, 0, [stringAfter(5, 0, 'b')])]),
+  malformedFixture('origin_inside_resent_run', 'a run sent again with its left origin in the part already held', [
+    rawUpdate(5, 0, [rootString('abcdef')]), rawUpdate(5, 0, [stringAfter(5, 3, 'abcdefghij')])]),
+  malformedFixture('parent_not_a_type', 'parent at a string item: the item is collected', [
+    rawUpdate(5, 0, [rootString('ab'), mapEntryIn(5, 0, 'k')])]),
+]
+
 const out = {
   meta: { yjsVersion: YJS_VERSION, format: 'v1', key: KEY, generatedBy: 'fixtures/generate.mjs' },
-  encode, merge, converge, diff, incremental, sticky, semantic, array, map, xml, containerConverge, fuzz,
+  encode, merge, converge, diff, incremental, sticky, semantic, array, map, xml, containerConverge, fuzz, malformed,
 }
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -528,4 +590,5 @@ writeFileSync(join(dest, 'golden_v13_6_31.json'), JSON.stringify(out, null, 2) +
 const count =
   encode.length + merge.length + converge.length + diff.length + incremental.length + sticky.length
   + semantic.length + array.length + map.length + xml.length + containerConverge.length + fuzz.length
+  + malformed.length
 console.log(`wrote ${count} fixtures (yjs ${YJS_VERSION}) -> Tests/YSwiftTests/Fixtures/golden_v13_6_31.json`)

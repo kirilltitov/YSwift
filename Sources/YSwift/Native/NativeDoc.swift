@@ -286,7 +286,7 @@ final class NativeDoc {
     private func integrate(_ bytes: [UInt8]) throws -> Bool {
         let parsed = try UpdateCodec.readUpdate(bytes)
         let refs = self.buildClientRefs(parsed.clientBlocks)
-        let structsDropped = self.integrateStructs(refs)
+        let structsDropped = try self.integrateStructs(refs)
         let deletesDropped = self.store.applyDeleteSet(parsed.deleteSet)
         return structsDropped || deletesDropped
     }
@@ -365,8 +365,9 @@ final class NativeDoc {
     /// Integrates structs honouring causal dependencies (yjs `integrateStructs`).
     /// The dependency stack lets a struct from a higher client wait for referenced
     /// data in a lower client. Returns true if some structs could not integrate
-    /// (missing causal deps) — the caller buffers the update and retries it later.
-    private func integrateStructs(_ clientsStructRefs: [UInt64: ClientRefs]) -> Bool {
+    /// (missing causal deps) — the caller buffers the update and retries it later. Throws on a
+    /// reference that can never resolve (`Item.getMissing`).
+    private func integrateStructs(_ clientsStructRefs: [UInt64: ClientRefs]) throws -> Bool {
         var ids = clientsStructRefs.keys.sorted()
         guard !ids.isEmpty else { return false }
 
@@ -389,10 +390,14 @@ final class NativeDoc {
             return nil
         }
 
-        // Sets aside the current stack when a dependency isn't satisfiable yet.
+        // Sets aside the current stack when a dependency isn't satisfiable yet, with the rest of each
+        // of its clients' structs (`addStackToRestSS`): those are not even looked at until it is.
         func dropStack() {
             if !stack.isEmpty { droppedStructs = true }
-            for item in stack { ids.removeAll { $0 == item.id.client } }
+            for item in stack {
+                ids.removeAll { $0 == item.id.client }
+                if let target = clientsStructRefs[item.id.client] { target.i = target.refs.count }
+            }
             stack.removeAll(keepingCapacity: true)
         }
 
@@ -407,7 +412,7 @@ final class NativeDoc {
                 if offset < 0 {
                     stack.append(head)
                     dropStack()
-                } else if let missing = head.getMissing(self.store) {
+                } else if let missing = try head.getMissing(self.store) {
                     stack.append(head)
                     let dependency = clientsStructRefs[missing]
                     if let dependency, dependency.i < dependency.refs.count {

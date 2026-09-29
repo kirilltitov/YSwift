@@ -171,8 +171,9 @@ class Struct {
     }
 
     /// Returns the client whose data must arrive before this struct can integrate,
-    /// or nil once all dependencies are present (resolving links as a side effect).
-    func getMissing(_ store: NativeStore) -> UInt64? { nil }
+    /// or nil once all dependencies are present (resolving links as a side effect). Throws
+    /// `YError.invalidUpdate` for a reference to its own client that is not present.
+    func getMissing(_ store: NativeStore) throws -> UInt64? { nil }
 
     /// Integrates this struct into `store`. Base behaviour (used by GC) just trims
     /// by `offset` and appends.
@@ -262,7 +263,7 @@ final class Item: Struct {
         self.length == 1 ? self.id : YID(client: self.id.client, clock: self.id.clock + self.length - 1)
     }
 
-    override func getMissing(_ store: NativeStore) -> UInt64? {
+    override func getMissing(_ store: NativeStore) throws -> UInt64? {
         if let origin, origin.client != self.id.client, origin.clock >= store.getState(origin.client) {
             return origin.client
         }
@@ -273,6 +274,13 @@ final class Item: Struct {
         }
         if let parentID, self.id.client != parentID.client, parentID.clock >= store.getState(parentID.client) {
             return parentID.client
+        }
+
+        // References to the item's own client are not waited for: they must already be present. Yjs
+        // resolves them unchecked, and its `findIndexSS` throws when a malformed update points at a
+        // clock the client has not reached.
+        for id in [self.origin, self.rightOrigin, self.parentID] {
+            if let id, id.clock >= store.getState(id.client) { throw YError.invalidUpdate }
         }
 
         // All dependencies present — resolve the links.

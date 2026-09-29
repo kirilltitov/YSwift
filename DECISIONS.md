@@ -70,7 +70,22 @@ remains the frozen contract established during the migration to native Swift.
   then collected by a later delete, children included. Pinned by the
   `audit_redo_*` undo fuzz scenarios.
 
+## Remote update integration
+
+- **A reference the document cannot resolve is rejected where yjs throws.**
+  Yjs waits for references to other clients but resolves an item's references
+  to its own client unchecked, and throws when one points at a clock that
+  client has not reached. `applyUpdateChecked` reports `invalidUpdate` there
+  instead of stopping the process. As in yjs `addStackToRestSS`, the structs of
+  a client that follow an item waiting for a dependency wait with it and are not
+  looked at until it arrives. Pinned by the `malformed` golden vectors.
+
 ## Known limitations
+
+- **Updates waiting for dependencies are kept whole** and retried as whole
+  updates; `encodeStateAsUpdate` leaves them out. Yjs keeps the waiting structs
+  merged into one pending update and includes it in `encodeStateAsUpdate`, so
+  while something waits the encoded states differ.
 
 - **Multi-attribute `format` byte order.** The public `Attributes` (and XML
   attribute) dictionaries are unordered, so a multi-attribute text `format` or

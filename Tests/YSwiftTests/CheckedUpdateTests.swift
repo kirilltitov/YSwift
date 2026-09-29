@@ -135,6 +135,44 @@ struct CheckedUpdateTests {
         }
     }
 
+    private struct MalformedReferences: Decodable {
+        struct Case: Decodable {
+            let name: String
+            let updates: [String]
+            let rejected: Int?
+            let update: String?
+        }
+        let malformed: [Case]
+    }
+
+    @Test("references the document cannot resolve are rejected where yjs throws")
+    func rejectsUnresolvableReferencesAsYjs() throws {
+        let url = try #require(
+            Bundle.module.url(forResource: "golden_v13_6_31", withExtension: "json", subdirectory: "Fixtures")
+        )
+        let fixtures = try JSONDecoder().decode(MalformedReferences.self, from: Data(contentsOf: url))
+        for fixture in fixtures.malformed {
+            let target = self.doc(clientID: 999)
+            var rejected: Int?
+            for (index, update) in fixture.updates.enumerated() {
+                do {
+                    try target.transact { transaction in
+                        try target.applyUpdateChecked(transaction, try #require(Data(base64Encoded: update)))
+                    }
+                } catch {
+                    #expect(error as? YError == .invalidUpdate, "\(fixture.name)")
+                    rejected = index
+                    break
+                }
+            }
+            #expect(rejected == fixture.rejected, "\(fixture.name): rejected update")
+            if let update = fixture.update {
+                let state = target.transact { target.encodeStateAsUpdate($0).base64EncodedString() }
+                #expect(state == update, "\(fixture.name): state")
+            }
+        }
+    }
+
     private static func malformedUpdates() -> [(name: String, bytes: Data)] {
         var clientOverflow: [UInt8] = [1, 1]
         clientOverflow += Self.varUint((UInt64(1) << 53))

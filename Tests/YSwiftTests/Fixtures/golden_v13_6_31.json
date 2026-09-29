@@ -1229,5 +1229,122 @@
       ],
       "state": "{\"b\":\"qobz\",\"a\":97,\"c\":true}"
     }
+  ],
+  "malformed": [
+    {
+      "name": "origin_own_client_future",
+      "description": "left origin at a clock of its own client not reached yet",
+      "updates": [
+        "AQIFAAQBB2NvbnRlbnQBYYQFCgFiAA=="
+      ],
+      "rejected": 0,
+      "update": null
+    },
+    {
+      "name": "origin_own_client_future_in_later_update",
+      "description": "the same, the item arriving in a later update",
+      "updates": [
+        "AQEFAAQBB2NvbnRlbnQBYQA=",
+        "AQEFAYQFCgFiAA=="
+      ],
+      "rejected": 1,
+      "update": null
+    },
+    {
+      "name": "origin_own_client_future_past_a_run",
+      "description": "left origin past a run the document holds",
+      "updates": [
+        "AQMFAAQBB2NvbnRlbnQBYYUFAAd7ImIiOjF9hAUBCWJjZGVmZ2hpagA=",
+        "AQEFC4QFDQF4AA=="
+      ],
+      "rejected": 1,
+      "update": null
+    },
+    {
+      "name": "origin_own_client_future_behind_a_missing_dependency",
+      "description": "the same, set aside with a waiting item",
+      "updates": [
+        "AQEFAAQBB2NvbnRlbnQBYQA=",
+        "AQIFAYQGAAFihAUKAWMA",
+        "AQIFAYQFAAFihAUBAWMA",
+        "AQEGAAQBB2NvbnRlbnQBeAA="
+      ],
+      "rejected": 3,
+      "update": null
+    },
+    {
+      "name": "origin_own_client_unknown",
+      "description": "left origin at a client the document has never seen",
+      "updates": [
+        "AQEFAIQFAwFhAA=="
+      ],
+      "rejected": 0,
+      "update": null
+    },
+    {
+      "name": "origin_self",
+      "description": "left origin at the item itself",
+      "updates": [
+        "AQEFAIQFAAFhAA=="
+      ],
+      "rejected": 0,
+      "update": null
+    },
+    {
+      "name": "right_origin_own_client_future",
+      "description": "right origin at a clock of its own client not reached yet",
+      "updates": [
+        "AQIFAAQBB2NvbnRlbnQBYUQFCgFiAA=="
+      ],
+      "rejected": 0,
+      "update": null
+    },
+    {
+      "name": "parent_own_client_future",
+      "description": "parent at a clock of its own client not reached yet",
+      "updates": [
+        "AQIFAAcBB2NvbnRlbnQBKAAFCgFrAX0BAA=="
+      ],
+      "rejected": 0,
+      "update": null
+    },
+    {
+      "name": "parent_self",
+      "description": "parent at the item itself",
+      "updates": [
+        "AQEFACgABQABawF9AQA="
+      ],
+      "rejected": 0,
+      "update": null
+    },
+    {
+      "name": "origin_other_client",
+      "description": "left origin at another client, present",
+      "updates": [
+        "AQEFAAQBB2NvbnRlbnQBYQA=",
+        "AQEGAIQFAAFiAA=="
+      ],
+      "rejected": null,
+      "update": "AgEGAIQFAAFiAQUABAEHY29udGVudAFhAA=="
+    },
+    {
+      "name": "origin_inside_resent_run",
+      "description": "a run sent again with its left origin in the part already held",
+      "updates": [
+        "AQEFAAQBB2NvbnRlbnQGYWJjZGVmAA==",
+        "AQEFAIQFAwphYmNkZWZnaGlqAA=="
+      ],
+      "rejected": null,
+      "update": "AQEFAAQBB2NvbnRlbnQKYWJjZGVmZ2hpagA="
+    },
+    {
+      "name": "parent_not_a_type",
+      "description": "parent at a string item: the item is collected",
+      "updates": [
+        "AQIFAAQBB2NvbnRlbnQCYWIoAAUAAWsBfQEA"
+      ],
+      "rejected": null,
+      "update": "AQIFAAQBB2NvbnRlbnQCYWIAAQEFAQIB"
+    }
   ]
 }

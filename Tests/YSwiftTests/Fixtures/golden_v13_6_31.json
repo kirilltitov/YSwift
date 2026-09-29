@@ -630,6 +630,42 @@
       "json": "{\"k\":4}",
       "stateVector": "AekHBA==",
       "update": "AQLpBwAhAQdjb250ZW50AWsDqOkHAgF9BAHpBwEAAw=="
+    },
+    {
+      "name": "map_overwritten_values_merge_behind_current",
+      "description": "set one key four times, one transaction per op",
+      "clientID": 1001,
+      "ops": [
+        {
+          "op": "set",
+          "key": "k",
+          "value": 1
+        },
+        {
+          "op": "set",
+          "key": "k",
+          "value": 2
+        },
+        {
+          "op": "set",
+          "key": "k",
+          "value": 3
+        },
+        {
+          "op": "set",
+          "key": "k",
+          "value": 4
+        }
+      ],
+      "updates": [
+        "AQHpBwAoAQdjb250ZW50AWsBfQEA",
+        "AQHpBwGo6QcAAX0CAekHAQAB",
+        "AQHpBwKo6QcBAX0DAekHAQEB",
+        "AQHpBwOo6QcCAX0EAekHAQIB"
+      ],
+      "json": "{\"k\":4}",
+      "stateVector": "AekHBA==",
+      "update": "AQLpBwAhAQdjb250ZW50AWsDqOkHAgF9BAHpBwEAAw=="
     }
   ],
   "xml": [

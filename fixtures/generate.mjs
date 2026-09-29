@@ -269,6 +269,11 @@ const map = [
   mapFixture('map_merged_value_stays_current', 'set/delete one key, one transaction per op', 1001,
     [{ op: 'set', key: 'k', value: 1 }, { op: 'set', key: 'k', value: 2 }, { op: 'delete', key: 'k' },
      { op: 'set', key: 'k', value: 3 }, { op: 'delete', key: 'k' }, { op: 'set', key: 'k', value: 4 }], true),
+  // Only a merge that absorbs the current value moves the key: overwritten values merge among
+  // themselves behind it.
+  mapFixture('map_overwritten_values_merge_behind_current', 'set one key four times, one transaction per op', 1001,
+    [{ op: 'set', key: 'k', value: 1 }, { op: 'set', key: 'k', value: 2 }, { op: 'set', key: 'k', value: 3 },
+     { op: 'set', key: 'k', value: 4 }], true),
 ]
 
 // --- Container convergence: concurrent multi-client edits must converge. ---

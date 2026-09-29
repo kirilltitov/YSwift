@@ -149,6 +149,16 @@ remains the frozen contract established during the migration to native Swift.
   resent from its middle joins the run before it, even one of another text):
   the length is reported as yjs reports it, and an index into such a text is
   taken as above.
+- **Numbers keep their sign; every NaN is written as the quiet NaN.** lib0
+  writes -0 as a zero varint with the sign bit, which YSwift now reads back as
+  -0. Which NaN yjs writes back depends on the engine's `DataView`: WebKit
+  always writes `7ff8000000000000`, V8 that for a signalling NaN but otherwise
+  mostly the bits it read (a float32 NaN widened), not always the same way.
+  YSwift writes `7ff8000000000000` for every NaN, which matches WebKit and,
+  except for NaNs with a payload or a sign, V8. lib0 also reads a zero varint
+  with a needless continuation byte (`7dc000`); YSwift rejects it, stricter
+  than the browsers on purpose. Pinned by `AnyNumberTests` and the `any_*`
+  malformed golden vectors.
 - **Deep nesting is rendered, not refused.** Yjs renders XML elements
   recursively and throws from about 1172 nested levels; `YXmlFragment.toString`
   has no error to report and renders any depth.

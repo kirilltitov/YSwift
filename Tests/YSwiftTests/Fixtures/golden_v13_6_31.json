@@ -1508,6 +1508,25 @@
       "update": "AQEFAAgBB2NvbnRlbnQBfP+AAAAA"
     },
     {
+      "name": "any_negative_zero",
+      "description": "an any value -0",
+      "updates": [
+        "AQEFAAgBB2NvbnRlbnQBfUAA"
+      ],
+      "rejected": null,
+      "update": "AQEFAAgBB2NvbnRlbnQBfUAA"
+    },
+    {
+      "name": "any_negative_zero_padded",
+      "description": "an any value -0 as a varint with a needless byte",
+      "updates": [
+        "AQEFAAgBB2NvbnRlbnQBfcAAAA=="
+      ],
+      "yswiftRejects": 0,
+      "rejected": null,
+      "update": "AQEFAAgBB2NvbnRlbnQBfUAA"
+    },
+    {
       "name": "nested_map_chain",
       "description": "2000 maps, each an entry of the one before",
       "updates": [

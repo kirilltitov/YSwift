@@ -123,7 +123,11 @@ struct Lib0Decoder {
         switch tag {
         case 127: return .undefined
         case 126: return .null
-        case 125: return .number(Double(try self.readVarInt()))
+        case 125:
+            // lib0 writes -0 as a zero varint with the sign bit (0x40), which an Int64 cannot hold.
+            let isNegativeZero = self.hasRemaining && self.bytes[self.position] == 0x40
+            let value = try self.readVarInt()
+            return .number(isNegativeZero ? -0.0 : Double(value))
         case 124: return .number(Double(try self.readFloat32()))
         case 123: return .number(try self.readFloat64())
         case 122: return .bigInt(try self.readBigInt64())

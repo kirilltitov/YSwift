@@ -534,6 +534,8 @@ const rootAnyNumber = (value) => {
   float64.writeDoubleBE(value)
   return [0x08, 1, ...varString(KEY), 1, 123, ...float64]
 }
+/** Root any content holding one value given by its lib0 bytes. */
+const rootAnyBytes = (...bytes) => [0x08, 1, ...varString(KEY), 1, ...bytes]
 const stringAfter = (client, clock, text) => [0x84, ...varUint(client), ...varUint(clock), ...varString(text)]
 const stringBefore = (client, clock, text) => [0x44, ...varUint(client), ...varUint(clock), ...varString(text)]
 const embedAfter = (client, clock, json) => [0x85, ...varUint(client), ...varUint(clock), ...varString(json)]
@@ -700,6 +702,12 @@ const malformed = [
     [rawUpdate(5, 0, [rootAnyNumber(1e300)])]),
   malformedFixture('infinity_in_text', 'an any value -Infinity in the text, which observers render',
     [rawUpdate(5, 0, [rootAnyNumber(-Infinity)])]),
+  // A number keeps its sign: -0 is written as a negative zero varint. lib0 also reads a zero varint with
+  // a needless continuation byte, which YSwift rejects on purpose. (Which NaN yjs writes back depends on
+  // the engine, even within V8, so NaNs are not recorded here.)
+  malformedFixture('any_negative_zero', 'an any value -0', [rawUpdate(5, 0, [rootAnyBytes(125, 0x40)])]),
+  malformedFixture('any_negative_zero_padded', 'an any value -0 as a varint with a needless byte', [
+    rawUpdate(5, 0, [rootAnyBytes(125, 0xc0, 0)])], { yswiftRejects: 0 }),
   malformedFixture('nested_map_chain', '2000 maps, each an entry of the one before', [nestedChain(5, 2000, true)],
     { unlimited: true }),
   // Yjs deletes (and collects) a nested type recursively and throws a RangeError once the stack runs

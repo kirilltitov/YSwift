@@ -350,7 +350,7 @@ final class NativeDoc {
 
     private static func content(from ref: ContentRef) -> Content {
         switch ref {
-        case .string(let string): .string(Array(string.utf16))
+        case .string(let string): .string(Array(string.utf16)[...])
         case .format(let key, let value): .format(key: key, valueJSON: value)
         case .embed(let json): .embed(json: json)
         case .deleted(let count): .deleted(count)

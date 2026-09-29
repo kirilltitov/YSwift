@@ -23,10 +23,11 @@ func sameID(_ lhs: YID?, _ rhs: YID?) -> Bool {
 }
 
 /// The integrated payload of an `Item`. Mirrors yjs `Content*` classes; only the
-/// fields needed to converge and to render text are modelled. Text is `[UInt16]`
-/// so offsets match JS string (UTF-16) semantics exactly.
+/// fields needed to converge and to render text are modelled. Text is UTF-16 code units
+/// so offsets match JS string semantics exactly, held as a slice so that splitting a long
+/// string does not copy all of it (JS strings slice without copying too).
 enum Content {
-    case string([UInt16])  // ContentString
+    case string(ArraySlice<UInt16>)  // ContentString
     case format(key: String, valueJSON: String)  // ContentFormat (raw JSON value)
     case embed(json: String)  // ContentEmbed (raw JSON)
     case deleted(UInt64)  // ContentDeleted
@@ -61,17 +62,27 @@ enum Content {
     mutating func splice(_ offset: Int) -> Content {
         switch self {
         case .string(var units):
-            var right = Array(units[offset...])
-            units.removeSubrange(offset...)
-            // yjs replaces a split surrogate pair with U+FFFD on both halves.
-            if offset > 0, offset <= units.count {
-                let last = units[offset - 1]
-                if last >= 0xD800, last <= 0xDBFF {
-                    units[offset - 1] = 0xFFFD
-                    if !right.isEmpty { right[0] = 0xFFFD }
-                }
+            // The smaller half is copied out and the larger one keeps the storage, alone: a split
+            // costs at most the smaller half, however long the string, and no half holds on to the
+            // capacity of the whole.
+            self = .deleted(0)
+            let split = units.startIndex + offset
+            var left: ArraySlice<UInt16>
+            var right: ArraySlice<UInt16>
+            if offset <= units.count - offset {
+                left = Array(units[..<split])[...]
+                right = units[split...]
+            } else {
+                left = units[..<split]
+                right = Array(units[split...])[...]
             }
-            self = .string(units)
+            units = []
+            // yjs replaces a split surrogate pair with U+FFFD on both halves.
+            if let last = left.last, last >= 0xD800, last <= 0xDBFF {
+                left[left.index(before: left.endIndex)] = 0xFFFD
+                if !right.isEmpty { right[right.startIndex] = 0xFFFD }
+            }
+            self = .string(left)
             return .string(right)
         case .deleted(let count):
             self = .deleted(UInt64(offset))
@@ -131,8 +142,7 @@ enum Content {
     func write(into encoder: inout Lib0Encoder, offset: Int) {
         switch self {
         case .string(let units):
-            let slice = offset == 0 ? units : Array(units[offset...])
-            encoder.writeVarString(String(decoding: slice, as: UTF16.self))
+            encoder.writeVarString(String(decoding: units.dropFirst(offset), as: UTF16.self))
         case .deleted(let count):
             encoder.writeVarUint(count - UInt64(offset))
         case .any(let items):

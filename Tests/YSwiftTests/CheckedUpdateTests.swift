@@ -182,13 +182,16 @@ struct CheckedUpdateTests {
         return result.withLock { $0! }
     }
 
-    @Test("references the document cannot resolve are rejected where yjs throws")
-    func rejectsUnresolvableReferencesAsYjs() throws {
+    private static func malformedFixtures() throws -> [MalformedReferences.Case] {
         let url = try #require(
             Bundle.module.url(forResource: "golden_v13_6_31", withExtension: "json", subdirectory: "Fixtures")
         )
-        let fixtures = try JSONDecoder().decode(MalformedReferences.self, from: Data(contentsOf: url))
-        for fixture in fixtures.malformed {
+        return try JSONDecoder().decode(MalformedReferences.self, from: Data(contentsOf: url)).malformed
+    }
+
+    @Test("references the document cannot resolve are rejected where yjs throws")
+    func rejectsUnresolvableReferencesAsYjs() throws {
+        for fixture in try Self.malformedFixtures() {
             let updates = try fixture.updates.map { try #require(Data(base64Encoded: $0)) }
             let replay = Self.onWorkerSizedStack { Self.replay(updates) }
             #expect(replay.rejected == fixture.rejected, "\(fixture.name): rejected update")
@@ -198,6 +201,32 @@ struct CheckedUpdateTests {
             if let update = fixture.update {
                 #expect(replay.state == update, "\(fixture.name): state")
             }
+        }
+    }
+
+    /// The peak resident size of this process, in bytes.
+    private static func peakResidentBytes() -> Int {
+        var usage = rusage()
+        getrusage(RUSAGE_SELF, &usage)
+        #if os(Linux)
+        return usage.ru_maxrss * 1024
+        #else
+        return usage.ru_maxrss
+        #endif
+    }
+
+    @Test(
+        "long runs split or merged by an update take memory in proportion to the document",
+        arguments: ["long_string_split_by_deletes"]
+    )
+    func splitsAndMergesInBoundedMemory(name: String) async {
+        // In a process of its own, so that the peak belongs to this replay alone.
+        await #expect(processExitsWith: .success) { [name] in
+            guard let fixture = try? Self.malformedFixtures().first(where: { $0.name == name }) else { exit(2) }
+            let updates = fixture.updates.compactMap { Data(base64Encoded: $0) }
+            let before = Self.peakResidentBytes()
+            _ = Self.replay(updates)
+            exit(Self.peakResidentBytes() - before < 64 << 20 ? EXIT_SUCCESS : EXIT_FAILURE)
         }
     }
 

@@ -190,12 +190,12 @@ final class NativeStore {
     /// Returns the struct ending at `id.clock`, splitting it there if `id` falls
     /// mid-struct (`getItemCleanEnd`). Returns the left half.
     func getItemCleanEnd(_ id: YID) -> Struct {
-        var structs = clients[id.client]!
-        let index = self.findIndex(structs, id.clock)
-        let s = structs[index]
+        let index = self.findIndex(clients[id.client]!, id.clock)
+        let s = clients[id.client]![index]
         if id.clock != s.id.clock + s.length - 1, let item = s as? Item {
-            structs.insert(splitItem(item, Int(id.clock - item.id.clock + 1)), at: index + 1)
-            clients[id.client] = structs
+            // Inserted in place: a copy of the client's array per split made many splits quadratic.
+            let right = splitItem(item, Int(id.clock - item.id.clock + 1))
+            clients[id.client]!.insert(right, at: index + 1)
         }
         return s
     }
@@ -203,25 +203,17 @@ final class NativeStore {
     /// Returns the struct starting at `id.clock`, splitting it there if `id` falls
     /// mid-struct (`getItemCleanStart`).
     func getItemCleanStart(_ id: YID) -> Struct {
-        var structs = clients[id.client]!
-        let index = self.findIndex(structs, id.clock)
-        let s = structs[index]
-        if s.id.clock < id.clock, let item = s as? Item {
-            structs.insert(splitItem(item, Int(id.clock - item.id.clock)), at: index + 1)
-            clients[id.client] = structs
-            return structs[index + 1]
-        }
-        return s
+        let index = self.findIndexCleanStart(id.client, id.clock)
+        return clients[id.client]![index]
     }
 
     /// Index of the struct starting at `clock` in `client`'s array, splitting the item covering it
     /// if needed (`findIndexCleanStart`).
     func findIndexCleanStart(_ client: UInt64, _ clock: UInt64) -> Int {
-        var structs = clients[client]!
-        let index = self.findIndex(structs, clock)
-        if structs[index].id.clock < clock, let item = structs[index] as? Item {
-            structs.insert(splitItem(item, Int(clock - item.id.clock)), at: index + 1)
-            clients[client] = structs
+        let index = self.findIndex(clients[client]!, clock)
+        if let item = clients[client]![index] as? Item, item.id.clock < clock {
+            let right = splitItem(item, Int(clock - item.id.clock))
+            clients[client]!.insert(right, at: index + 1)
             return index + 1
         }
         return index

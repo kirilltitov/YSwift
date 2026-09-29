@@ -228,7 +228,7 @@ final class NativeText {
     // MARK: Insert
 
     private func insertText(_ pos: TextPosition, text: [UInt16], attributes: [String: String]) {
-        self.insertContent(pos, content: .string(text), attributes: attributes)
+        self.insertContent(pos, content: .string(text[...]), attributes: attributes)
     }
 
     /// The shared body of every insertion: text and embeds differ only in the content they carry.
@@ -330,7 +330,7 @@ final class NativeText {
         }
         if length > 0 {
             let newlines = [UInt16](repeating: 0x0A, count: length)
-            let item = self.makeItem(pos, content: .string(newlines))
+            let item = self.makeItem(pos, content: .string(newlines[...]))
             pos.right = item
             pos.forward()
         }

@@ -531,6 +531,11 @@ const stringAfter = (client, clock, text) => [0x84, ...varUint(client), ...varUi
 const stringBefore = (client, clock, text) => [0x44, ...varUint(client), ...varUint(clock), ...varString(text)]
 const embedAfter = (client, clock, json) => [0x85, ...varUint(client), ...varUint(clock), ...varString(json)]
 const mapEntryIn = (client, clock, key) => [0x28, 0, ...varUint(client), ...varUint(clock), ...varString(key), 1, 125, 1]
+/** An update without structs, deleting `ranges` ([clock, length] pairs) of one client. */
+const deleteRanges = (client, ranges) => b64(new Uint8Array([
+  0, 1, ...varUint(client), ...varUint(ranges.length), ...ranges.flatMap(([clock, length]) => [...varUint(clock), ...varUint(length)]),
+]))
+const range = (count, at) => Array.from({ length: count }, (_, index) => at(index))
 /** `depth` types of one client, each nested in the one before as map entry `a` (`map`) or list element. */
 const nestedChain = (client, depth, map) => rawUpdate(client, 0, Array.from({ length: depth }, (_, k) => [
   0x07 | (map ? 0x20 : 0),
@@ -584,6 +589,10 @@ const malformed = [
     rawUpdate(5, 0, [rootString('ab'), mapEntryIn(5, 0, 'k')])]),
   // Size and depth: yjs accepts these; the document must survive them, and being dropped.
   malformedFixture('nested_map_chain', '2000 maps, each an entry of the one before', [nestedChain(5, 2000, true)]),
+  malformedFixture('surrogate_pairs_split', 'deletes splitting surrogate pairs near either end of a string', [
+    rawUpdate(5, 0, [rootString('\u{1F600}'.repeat(4))]), deleteRanges(5, [[1, 1], [6, 1]])]),
+  malformedFixture('long_string_split_by_deletes', 'a 40 000-unit string split by 4000 deleted ranges', [
+    rawUpdate(5, 0, [rootString('x'.repeat(40000))]), deleteRanges(5, range(4000, (i) => [i * 10 + 5, 1]))]),
 ]
 
 const out = {

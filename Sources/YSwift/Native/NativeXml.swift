@@ -63,7 +63,7 @@ struct NativeXml {
             }
         case .text(let string):
             _ = self.makeItem(
-                parent: nested, parentSub: nil, left: nil, right: nil, content: .string(Array(string.utf16)))
+                parent: nested, parentSub: nil, left: nil, right: nil, content: .string(Array(string.utf16)[...]))
         }
         return item
     }

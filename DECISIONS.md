@@ -226,6 +226,17 @@ remains the frozen contract established during the migration to native Swift.
   and convergent, byte-exact when the peer used the same order, and otherwise a
   semantic match. Single-attribute formats are byte-identical. This is
   characterised by the `semantic` fixture.
+- **Formatting cleanup after a remote transaction is not ported.** When a
+  transaction that is not local changes a text holding formatting, yjs runs
+  `cleanupYTextAfterTransaction` once the transaction ends: in a follow-up
+  transaction of its own it deletes the format items the change left
+  redundant, which emits an extra update and changes the encoded state. YSwift
+  keeps those items (they repeat formatting already in effect, so the text and
+  its delta are the same) and emits no such update; a peer's cleanup update is
+  applied as any other. Local deletions do clean up formatting
+  (`cleanupFormattingGap`). Recorded scenarios that reach this are left out of
+  the undo corpus (`TEXT_CLEANUP_GAP` in `fixtures/undo-fuzz.mjs`); random
+  valid scenarios with formatting and remote edits reach it often.
 - `UndoManager` and `Awareness` are **not `Sendable`** (single-context helpers);
   wrap in an actor if shared across connections.
 - `YSwift.UndoManager` shadows `Foundation.UndoManager` — qualify when both are

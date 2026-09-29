@@ -15,8 +15,10 @@ of scope.
 
 YSwift is a **pure-Swift** YATA + `lib0` implementation with no Rust runtime or
 build dependency. It is implemented and verified against **JS-Yjs v13.6.31**
-on macOS + Linux, byte-for-byte except for the documented semantically
-equivalent multi-attribute key-order case:
+on macOS + Linux, byte-for-byte except for two documented cases: the
+semantically equivalent multi-attribute key order, and the formatting cleanup
+yjs runs after a remote transaction on formatted text, which is not ported
+(see [Known limitations](DECISIONS.md#known-limitations)):
 
 - **Text** — insert/delete/format, `toDelta`, sync/encoding
   (`applyUpdateChecked`, legacy `applyUpdate`, `encodeStateAsUpdate` full + diff,

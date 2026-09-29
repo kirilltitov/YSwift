@@ -318,8 +318,17 @@ final class Item: Struct {
         // References to the item's own client are not waited for: they must already be present. Yjs
         // resolves them unchecked, and its `findIndexSS` throws when a malformed update points at a
         // clock the client has not reached.
-        for id in [self.origin, self.rightOrigin, self.parentID] {
-            if let id, id.clock >= store.getState(id.client) { throw YError.invalidUpdate }
+        // A reference to another client got here only once present. The caller integrates a client's
+        // structs in clock order, so its state has reached this item's clock: only a reference at or past
+        // it needs the lookup.
+        let client = self.id.client
+        let clock = self.id.clock
+        func unreached(_ id: YID?) -> Bool {
+            guard let id, id.client == client, id.clock >= clock else { return false }
+            return id.clock >= store.getState(client)
+        }
+        if unreached(self.origin) || unreached(self.rightOrigin) || unreached(self.parentID) {
+            throw YError.invalidUpdate
         }
 
         // All dependencies present — resolve the links.

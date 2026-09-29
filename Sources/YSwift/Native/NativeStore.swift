@@ -19,10 +19,14 @@ final class NativeStore {
     /// had lost in an earlier transaction (`ContentType.delete`).
     var mergeStructs: [YID] = []
 
+    /// Whether a nested type was ever added; without one nothing nests.
+    private var holdsTypes = false
+
     deinit {
         // A type also owns the current value of each of its keys (`YTypeImpl.map`), so a chain of
         // nested map entries would be released recursively, one stack frame per level, and a deep
         // enough chain overflows the stack. With that ownership cut, the structs go one by one.
+        guard self.holdsTypes else { return }
         for structs in self.clients.values {
             for case let item as Item in structs {
                 if case .type(let type, _, _) = item.content { type.map = [:] }
@@ -63,6 +67,11 @@ final class NativeStore {
     /// When non-nil, `deleteItem` logs `(client, clock, length)` for the deletes made
     /// during the current transaction (used to build the emitted update's delete set).
     var deleteLog: [(client: UInt64, clock: UInt64, length: UInt64)]?
+    /// Whether `deleteItem` deleted an item, and a type, during the current transaction. Only these
+    /// deletions leave content to collect (an item that arrives deleted holds none), and only a type's
+    /// collection can fail (`collectionFails`).
+    var deletedItemInTransaction = false
+    var deletedTypeInTransaction = false
 
     /// When non-nil, collects the names of root types changed during the current
     /// transaction (integrated/deleted items), for firing text observers on commit.
@@ -144,12 +153,14 @@ final class NativeStore {
                 item.parent?.length -= Int(item.length)
             }
             item.markDeleted()
+            self.deletedItemInTransaction = true
             self.version += 1
             self.deleteLog?.append((item.id.client, item.id.clock, item.length))
             if let name = item.parent?.name { self.changedTypeNames?.insert(name) }
             self.addChangedType(item.parent)
             self.checkChangedRootCompleteness(of: item)
             if case .type(let type, _, _) = item.content {
+                self.deletedTypeInTransaction = true
                 var children: [Item] = []
                 var listed = Set<ObjectIdentifier>()
                 var child = type.start
@@ -197,6 +208,7 @@ final class NativeStore {
         self.version += 1
         if let name = (`struct` as? Item)?.parent?.name { self.changedTypeNames?.insert(name) }
         if let item = `struct` as? Item {
+            if case .type = item.content { self.holdsTypes = true }
             self.addChangedType(item.parent)
             self.checkChangedRootCompleteness(of: item)
         }
@@ -231,11 +243,18 @@ final class NativeStore {
         return structs[self.findIndex(structs, id.clock)]
     }
 
+    /// The index of the struct covering `clock` and the struct, with one lookup of the client's
+    /// array, which is not held on return: a split then inserts into it without copying it.
+    private func lookup(_ client: UInt64, _ clock: UInt64) -> (index: Int, struct: Struct) {
+        let structs = self.clients[client]!
+        let index = self.findIndex(structs, clock)
+        return (index, structs[index])
+    }
+
     /// Returns the struct ending at `id.clock`, splitting it there if `id` falls
     /// mid-struct (`getItemCleanEnd`). Returns the left half.
     func getItemCleanEnd(_ id: YID) -> Struct {
-        let index = self.findIndex(clients[id.client]!, id.clock)
-        let s = clients[id.client]![index]
+        let (index, s) = self.lookup(id.client, id.clock)
         if id.clock != s.id.clock + s.length - 1, let item = s as? Item {
             // Inserted in place: a copy of the client's array per split made many splits quadratic.
             let right = splitItem(item, Int(id.clock - item.id.clock + 1))
@@ -247,15 +266,18 @@ final class NativeStore {
     /// Returns the struct starting at `id.clock`, splitting it there if `id` falls
     /// mid-struct (`getItemCleanStart`).
     func getItemCleanStart(_ id: YID) -> Struct {
-        let index = self.findIndexCleanStart(id.client, id.clock)
-        return clients[id.client]![index]
+        let (index, s) = self.lookup(id.client, id.clock)
+        guard let item = s as? Item, item.id.clock < id.clock else { return s }
+        let right = splitItem(item, Int(id.clock - item.id.clock))
+        clients[id.client]!.insert(right, at: index + 1)
+        return right
     }
 
     /// Index of the struct starting at `clock` in `client`'s array, splitting the item covering it
     /// if needed (`findIndexCleanStart`).
     func findIndexCleanStart(_ client: UInt64, _ clock: UInt64) -> Int {
-        let index = self.findIndex(clients[client]!, clock)
-        if let item = clients[client]![index] as? Item, item.id.clock < clock {
+        let (index, s) = self.lookup(client, clock)
+        if let item = s as? Item, item.id.clock < clock {
             let right = splitItem(item, Int(clock - item.id.clock))
             clients[client]!.insert(right, at: index + 1)
             return index + 1
@@ -293,26 +315,20 @@ final class NativeStore {
             }
             deleteSet[client] = merged
         }
-        if gc {
+        if gc, self.deletedItemInTransaction {
             for client in deleteClients { self.garbageCollect(client, deleteSet[client]!) }
         }
         for client in deleteClients {
-            for range in deleteSet[client]!.reversed() {
-                let last = self.findIndex(self.clients[client]!, range.clock + range.length - 1)
-                var index = min(self.clients[client]!.count - 1, last + 1)
-                while index > 0, self.clients[client]![index].id.clock >= range.clock {
-                    index -= 1 + self.tryToMergeWithLefts(&self.clients[client]!, index)
-                }
-            }
+            // A range within the structs the transaction added is merged with them below: merging
+            // adjacent structs gives the same structs in any order.
+            let before = self.transactionBeforeState[client] ?? 0
+            let added = self.getState(client) != before ? before : UInt64.max
+            self.mergeAround(&self.clients[client]!, deleteSet[client]!.lazy.filter { $0.clock < added })
         }
         for client in self.clientOrder {
             let before = self.transactionBeforeState[client] ?? 0
             guard self.getState(client) != before else { continue }
-            let first = max(self.findIndex(self.clients[client]!, before), 1)
-            var index = self.clients[client]!.count - 1
-            while index >= first {
-                index -= 1 + self.tryToMergeWithLefts(&self.clients[client]!, index)
-            }
+            self.mergeFrom(&self.clients[client]!, before)
         }
         for id in self.mergeStructs.reversed() {
             let position = self.findIndex(self.clients[id.client]!, id.clock)
@@ -326,21 +342,50 @@ final class NativeStore {
         self.mergeStructs = []
     }
 
+    /// `tryMergeDeleteSet` for one client's ranges, in reverse.
+    private func mergeAround<Ranges: BidirectionalCollection<(clock: UInt64, length: UInt64)>>(
+        _ structs: inout [Struct],
+        _ ranges: Ranges,
+    ) {
+        for range in ranges.reversed() {
+            let last = self.findIndex(structs, range.clock + range.length - 1)
+            var index = min(structs.count - 1, last + 1)
+            while index > 0, structs[index].id.clock >= range.clock {
+                index -= 1 + self.tryToMergeWithLefts(&structs, index)
+            }
+        }
+    }
+
+    /// Merges the structs from `clock` on, which the transaction added, with their left neighbours.
+    private func mergeFrom(_ structs: inout [Struct], _ clock: UInt64) {
+        let first = max(self.findIndex(structs, clock), 1)
+        var index = structs.count - 1
+        while index >= first {
+            index -= 1 + self.tryToMergeWithLefts(&structs, index)
+        }
+    }
+
     /// Collects the unprotected items the transaction deleted, and only those: an item deleted
     /// earlier under protection (`keep`) stays as it is once the protection is lifted, as in yjs.
     private func garbageCollect(_ client: UInt64, _ ranges: [(clock: UInt64, length: UInt64)]) {
+        // Collecting a type replaces its children with GC structs in place (the count never changes):
+        // the local copy is dropped first, so that the store's array is not copied, and read afresh.
+        var structs = clients[client]!
         for range in ranges {
-            // Collecting a type replaces its children with GC structs in place (the count never
-            // changes), so structs are read afresh.
-            let count = clients[client]!.count
-            var index = self.findIndex(clients[client]!, range.clock)
-            while index < count {
-                let s = clients[client]![index]
+            var index = self.findIndex(structs, range.clock)
+            while index < structs.count {
+                let s = structs[index]
                 guard s.id.clock < range.clock + range.length else { break }
                 index += 1
                 guard let item = s as? Item, item.deleted, !item.keep else { continue }
                 if case .deleted = item.content { continue }
+                guard case .type = item.content else {
+                    self.collect(item, parentGCd: false)
+                    continue
+                }
+                structs = []
                 self.collect(item, parentGCd: false)
+                structs = clients[client]!
             }
         }
     }
@@ -397,6 +442,7 @@ final class NativeStore {
     /// yjs deletes only a key's current value with the type, but collects the whole key chain. Walks
     /// the types as yjs does, without changing them and without recursion.
     func collectionFails(_ deletes: [(client: UInt64, clock: UInt64, length: UInt64)]) -> Bool {
+        guard self.deletedTypeInTransaction else { return false }
         var collected = Set<ObjectIdentifier>()
         for delete in deletes {
             guard let structs = self.clients[delete.client] else { continue }

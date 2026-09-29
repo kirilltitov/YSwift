@@ -117,6 +117,8 @@ final class NativeDoc {
             self.txnStartIntegratedCount = self.store.integratedCount
             self.txnStartSplitCount = self.store.splitCount
             self.store.deleteLog = []
+            self.store.deletedItemInTransaction = false
+            self.store.deletedTypeInTransaction = false
             self.store.changedTypeNames = []
             self.store.changedTypes = [:]
             self.store.transactionBeforeState = self.txnBeforeState

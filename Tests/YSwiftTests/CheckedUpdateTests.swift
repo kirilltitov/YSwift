@@ -217,7 +217,7 @@ struct CheckedUpdateTests {
 
     @Test(
         "long runs split or merged by an update take memory in proportion to the document",
-        arguments: ["long_string_split_by_deletes"]
+        arguments: ["long_string_split_by_deletes", "long_run_merged", "long_string_split_by_origins"]
     )
     func splitsAndMergesInBoundedMemory(name: String) async {
         // In a process of its own, so that the peak belongs to this replay alone.

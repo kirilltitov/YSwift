@@ -301,28 +301,31 @@ final class NativeStore {
 
     /// Merges `structs[pos]` leftward into contiguous compatible structs, removing
     /// absorbed entries. Returns how many were merged away (`tryToMergeWithLefts`).
+    ///
+    /// Yjs merges from right to left, each struct absorbing the run to its right; appending the
+    /// run to its first struct instead gives the same structs without copying the run once per
+    /// struct in it.
     private func tryToMergeWithLefts(_ structs: inout [Struct], _ pos: Int) -> Int {
-        var right = structs[pos]
-        var left = structs[pos - 1]
-        var index = pos
-        while index > 0 {
-            if left.isDeleted == right.isDeleted, type(of: left) == type(of: right), left.mergeWith(right) {
-                // The merged item takes over as the key's current value.
-                if let item = right as? Item, let key = item.parentSub, let parent = item.parent,
-                    parent.map[key] === item, let merged = left as? Item
-                {
-                    parent.map[key] = merged
-                }
-                index -= 1
-                right = left
-                if index > 0 { left = structs[index - 1] }
-                continue
-            }
-            break
+        var first = pos
+        while first > 0 {
+            let left = structs[first - 1]
+            let right = structs[first]
+            guard left.isDeleted == right.isDeleted, type(of: left) == type(of: right), left.canMerge(with: right)
+            else { break }
+            first -= 1
         }
-        let merged = pos - index
-        if merged > 0 { structs.removeSubrange((pos + 1 - merged)...pos) }
-        return merged
+        guard first < pos else { return 0 }
+        let merged = structs[first]
+        for index in (first + 1)...pos {
+            let right = structs[index]
+            _ = merged.mergeWith(right)
+            // The merged item takes over as the key's current value.
+            if let item = right as? Item, let key = item.parentSub, let parent = item.parent, parent.map[key] === item {
+                parent.map[key] = merged as? Item
+            }
+        }
+        structs.removeSubrange((first + 1)...pos)
+        return pos - first
     }
 
     /// Applies a decoded delete set: splits at range boundaries and marks the

@@ -62,6 +62,36 @@ struct EngineBehaviorTests {
         #expect(states[docA.clientID]?["color"] == .string("#f00"))
     }
 
+    @Test("Awareness ignores an update whose clock no JS number holds exactly")
+    func awarenessRejectsUnsafeClocks() {
+        func update(client: UInt64, clock: UInt64, state: String) -> Data {
+            var bytes: [UInt8] = [1]
+            for var value in [client, clock] {
+                while value > 0x7F {
+                    bytes.append(UInt8(value & 0x7F) | 0x80)
+                    value >>= 7
+                }
+                bytes.append(UInt8(value))
+            }
+            bytes.append(UInt8(state.utf8.count))
+            return Data(bytes + Array(state.utf8))
+        }
+        let doc = YDoc(clientID: 2)
+        let awareness = Awareness(doc)
+        awareness.setLocalStateField("x", 1)
+        // lib0 fails to read these; they used to stop the process on the conversion to Int, or on the
+        // clock bump a remote null state gets for the local client.
+        awareness.applyUpdate(update(client: 5, clock: .max, state: "{}"))
+        awareness.applyUpdate(update(client: 2, clock: 1 << 53, state: "null"))
+        #expect(awareness.states()[5] == nil)
+        #expect(awareness.states()[2]?["x"] == .int(1))
+        // The largest safe clock is still adopted, and a later null bumps it without overflow.
+        awareness.applyUpdate(update(client: 6, clock: (1 << 53) - 1, state: "{}"))
+        awareness.applyUpdate(update(client: 2, clock: (1 << 53) - 1, state: "null"))
+        #expect(awareness.states()[6] != nil)
+        #expect(awareness.states()[2]?["x"] == .int(1))
+    }
+
     @Test("Awareness onChange reports newly-added clients")
     func awarenessOnChange() {
         let docB = YDoc(clientID: 2)

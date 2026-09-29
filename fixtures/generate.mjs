@@ -528,6 +528,12 @@ const rawUpdate = (client, clock, structs) =>
 const rootString = (text) => [0x04, 1, ...varString(KEY), ...varString(text)]
 const rootMapType = () => [0x07, 1, ...varString(KEY), 1]
 const rootAnyFalse = (count) => [0x08, 1, ...varString(KEY), ...varUint(count), ...new Array(count).fill(121)]
+/** Root any content holding one number too large for an integer. */
+const rootAnyNumber = (value) => {
+  const float64 = Buffer.alloc(8)
+  float64.writeDoubleBE(value)
+  return [0x08, 1, ...varString(KEY), 1, 123, ...float64]
+}
 const stringAfter = (client, clock, text) => [0x84, ...varUint(client), ...varUint(clock), ...varString(text)]
 const stringBefore = (client, clock, text) => [0x44, ...varUint(client), ...varUint(clock), ...varString(text)]
 const embedAfter = (client, clock, json) => [0x85, ...varUint(client), ...varUint(clock), ...varString(json)]
@@ -624,6 +630,10 @@ const malformed = [
   malformedFixture('parent_not_a_type', 'parent at a string item: the item is collected', [
     rawUpdate(5, 0, [rootString('ab'), mapEntryIn(5, 0, 'k')])]),
   // Size and depth: yjs accepts these; the document must survive them, and being dropped.
+  malformedFixture('huge_number_in_text', 'an any value 1e300 in the text, which observers render',
+    [rawUpdate(5, 0, [rootAnyNumber(1e300)])]),
+  malformedFixture('infinity_in_text', 'an any value -Infinity in the text, which observers render',
+    [rawUpdate(5, 0, [rootAnyNumber(-Infinity)])]),
   malformedFixture('nested_map_chain', '2000 maps, each an entry of the one before', [nestedChain(5, 2000, true)]),
   // Yjs deletes (and collects) a nested type recursively. On Node's default stack it deletes 3750 nested
   // lists and 2187 nested maps, and throws a RangeError from a few more; YSwift rejects past 4096.

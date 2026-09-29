@@ -588,7 +588,10 @@ final class NativeText {
         switch any {
         case .null, .undefined: .null
         case .bool(let flag): .bool(flag)
-        case .number(let number): number == number.rounded(.towardZero) ? .int(Int64(number)) : .double(number)
+        case .number(let number):
+            // An integral value beyond JS's safe integers (or infinite) has no Int64 to become.
+            number == number.rounded(.towardZero) && abs(number) < 9_007_199_254_740_992
+                ? .int(Int64(number)) : .double(number)
         case .bigInt(let number): .int(number)
         case .string(let text): .string(text)
         case .bytes(let bytes): .data(Data(bytes))

@@ -240,6 +240,22 @@ struct CheckedUpdateTests {
         }
     }
 
+    @Test(
+        "a text observer renders numbers too large for an integer as doubles",
+        arguments: [("huge_number_in_text", 1e300), ("infinity_in_text", -Double.infinity)]
+    )
+    func observesHugeNumbers(name: String, value: Double) throws {
+        let fixture = try #require(try Self.malformedFixtures().first { $0.name == name })
+        let update = try #require(Data(base64Encoded: fixture.updates[0]))
+        let target = self.doc(clientID: 999)
+        let deltas = Mutex<[[Delta]]>([])
+        let subscription = target.text("content").observe { event in deltas.withLock { $0.append(event.delta) } }
+        try target.transact { try target.applyUpdateChecked($0, update) }
+        subscription.cancel()
+        #expect(deltas.withLock { $0 } == [[.insert(.double(value), attributes: nil)]])
+        #expect(target.transact { target.encodeStateAsUpdate($0).base64EncodedString() } == fixture.update)
+    }
+
     @Test("undoing a step deep inside the scope takes time in proportion to the step")
     func undoesDeepInsideTheScopeInLinearTime() throws {
         let fixture = try #require(try Self.malformedFixtures().first { $0.name == "deep_scope_undone" })

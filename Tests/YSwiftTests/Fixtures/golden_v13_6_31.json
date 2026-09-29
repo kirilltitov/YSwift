@@ -1347,6 +1347,24 @@
       "update": "AQIFAAQBB2NvbnRlbnQCYWIAAQEFAQIB"
     },
     {
+      "name": "huge_number_in_text",
+      "description": "an any value 1e300 in the text, which observers render",
+      "updates": [
+        "AQEFAAgBB2NvbnRlbnQBe3435DyIAHWcAA=="
+      ],
+      "rejected": null,
+      "update": "AQEFAAgBB2NvbnRlbnQBe3435DyIAHWcAA=="
+    },
+    {
+      "name": "infinity_in_text",
+      "description": "an any value -Infinity in the text, which observers render",
+      "updates": [
+        "AQEFAAgBB2NvbnRlbnQBe//wAAAAAAAAAA=="
+      ],
+      "rejected": null,
+      "update": "AQEFAAgBB2NvbnRlbnQBfP+AAAAA"
+    },
+    {
       "name": "nested_map_chain",
       "description": "2000 maps, each an entry of the one before",
       "updates": [

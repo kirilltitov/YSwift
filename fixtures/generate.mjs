@@ -531,6 +531,13 @@ const stringAfter = (client, clock, text) => [0x84, ...varUint(client), ...varUi
 const stringBefore = (client, clock, text) => [0x44, ...varUint(client), ...varUint(clock), ...varString(text)]
 const embedAfter = (client, clock, json) => [0x85, ...varUint(client), ...varUint(clock), ...varString(json)]
 const mapEntryIn = (client, clock, key) => [0x28, 0, ...varUint(client), ...varUint(clock), ...varString(key), 1, 125, 1]
+/** `depth` types of one client, each nested in the one before as map entry `a` (`map`) or list element. */
+const nestedChain = (client, depth, map) => rawUpdate(client, 0, Array.from({ length: depth }, (_, k) => [
+  0x07 | (map ? 0x20 : 0),
+  ...(k === 0 ? [1, ...varString(KEY)] : [0, ...varUint(client), ...varUint(k - 1)]),
+  ...(map ? varString('a') : []),
+  map ? 1 : 0,
+]))
 
 function malformedFixture(name, description, updates) {
   const doc = new Y.Doc()
@@ -575,6 +582,8 @@ const malformed = [
     rawUpdate(5, 0, [rootString('abcdef')]), rawUpdate(5, 0, [stringAfter(5, 3, 'abcdefghij')])]),
   malformedFixture('parent_not_a_type', 'parent at a string item: the item is collected', [
     rawUpdate(5, 0, [rootString('ab'), mapEntryIn(5, 0, 'k')])]),
+  // Size and depth: yjs accepts these; the document must survive them, and being dropped.
+  malformedFixture('nested_map_chain', '2000 maps, each an entry of the one before', [nestedChain(5, 2000, true)]),
 ]
 
 const out = {

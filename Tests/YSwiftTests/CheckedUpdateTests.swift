@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 
 @testable import YSwift
@@ -145,6 +146,42 @@ struct CheckedUpdateTests {
         let malformed: [Case]
     }
 
+    private struct Replay: Sendable {
+        var rejected: Int?
+        var error: YError?
+        var state: String
+    }
+
+    /// Applies the updates to a fresh document one per transaction, as the fixture generator does, and
+    /// drops the document before returning.
+    private static func replay(_ updates: [Data]) -> Replay {
+        let target = YDoc(clientID: 999)
+        for (index, update) in updates.enumerated() {
+            do {
+                try target.transact { try target.applyUpdateChecked($0, update) }
+            } catch {
+                return Replay(rejected: index, error: error as? YError, state: "")
+            }
+        }
+        return Replay(state: target.transact { target.encodeStateAsUpdate($0).base64EncodedString() })
+    }
+
+    /// Runs `body` on a thread with the 512 KiB stack of a Swift concurrency worker, so that a recursion
+    /// as deep as the input overflows the same way wherever the suite runs.
+    private static func onWorkerSizedStack<T: Sendable>(_ body: @escaping @Sendable () -> T) -> T {
+        let result = Mutex<T?>(nil)
+        let done = DispatchSemaphore(value: 0)
+        let thread = Thread {
+            let value = body()
+            result.withLock { $0 = value }
+            done.signal()
+        }
+        thread.stackSize = 512 * 1024
+        thread.start()
+        done.wait()
+        return result.withLock { $0! }
+    }
+
     @Test("references the document cannot resolve are rejected where yjs throws")
     func rejectsUnresolvableReferencesAsYjs() throws {
         let url = try #require(
@@ -152,23 +189,14 @@ struct CheckedUpdateTests {
         )
         let fixtures = try JSONDecoder().decode(MalformedReferences.self, from: Data(contentsOf: url))
         for fixture in fixtures.malformed {
-            let target = self.doc(clientID: 999)
-            var rejected: Int?
-            for (index, update) in fixture.updates.enumerated() {
-                do {
-                    try target.transact { transaction in
-                        try target.applyUpdateChecked(transaction, try #require(Data(base64Encoded: update)))
-                    }
-                } catch {
-                    #expect(error as? YError == .invalidUpdate, "\(fixture.name)")
-                    rejected = index
-                    break
-                }
+            let updates = try fixture.updates.map { try #require(Data(base64Encoded: $0)) }
+            let replay = Self.onWorkerSizedStack { Self.replay(updates) }
+            #expect(replay.rejected == fixture.rejected, "\(fixture.name): rejected update")
+            if replay.rejected != nil {
+                #expect(replay.error == .invalidUpdate, "\(fixture.name)")
             }
-            #expect(rejected == fixture.rejected, "\(fixture.name): rejected update")
             if let update = fixture.update {
-                let state = target.transact { target.encodeStateAsUpdate($0).base64EncodedString() }
-                #expect(state == update, "\(fixture.name): state")
+                #expect(replay.state == update, "\(fixture.name): state")
             }
         }
     }

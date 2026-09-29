@@ -14,6 +14,17 @@ final class NativeStore {
     /// on commit, as yjs does through `transaction._mergeStructs`.
     private(set) var splitCount = 0
 
+    deinit {
+        // A type also owns the current value of each of its keys (`YTypeImpl.map`), so a chain of
+        // nested map entries would be released recursively, one stack frame per level, and a deep
+        // enough chain overflows the stack. With that ownership cut, the structs go one by one.
+        for structs in self.clients.values {
+            for case let item as Item in structs {
+                if case .type(let type, _, _) = item.content { type.map = [:] }
+            }
+        }
+    }
+
     /// Splits `left` at `diff`, returning the new right half. The two halves are linked
     /// into the sibling list; the caller is responsible for inserting the right half
     /// into the store array (yjs `splitItem`, whose merge bookkeeping `splitCount` stands in for).

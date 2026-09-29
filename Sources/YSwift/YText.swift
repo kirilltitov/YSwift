@@ -47,7 +47,8 @@ public final class YText: Sendable {
         self.doc.engine.textString(in: txn, self.handle)
     }
 
-    /// The length in UTF-16 code units.
+    /// The length in UTF-16 code units. As in Yjs, a malformed update can drive it below zero: a run
+    /// resent from its middle joins the run before it, even one of another text.
     public func length(_ txn: YTransaction) -> Int {
         self.doc.engine.textLength(in: txn, self.handle)
     }

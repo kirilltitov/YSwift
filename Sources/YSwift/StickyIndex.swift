@@ -20,14 +20,16 @@ public struct StickyIndex: Sendable, Hashable {
     /// Opaque, wire-compatible encoded form.
     let raw: Data
 
-    /// Creates a sticky position for `index` within `text`.
+    /// Creates a sticky position for `index` within `text`. An index before the start stands for the
+    /// start, and one past the end for the end.
     public static func fromIndex(_ txn: YTransaction, _ text: YText, _ index: Int, assoc: Assoc = .after) -> StickyIndex
     {
         StickyIndex(raw: txn.engine.stickyFromIndex(in: txn, text.handle, index: index, assoc: assoc) ?? Data())
     }
 
     /// Resolves this sticky position to an absolute index in `doc` (-1 if it
-    /// can no longer be referenced).
+    /// can no longer be referenced). A position at the end resolves to `YText.length`, which a
+    /// malformed update can make negative.
     public func toIndex(_ txn: YTransaction, _ doc: YDoc) -> Int {
         txn.engine.stickyToIndex(in: txn, self.raw) ?? -1
     }

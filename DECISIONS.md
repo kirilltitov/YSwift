@@ -141,6 +141,14 @@ remains the frozen contract established during the migration to native Swift.
   (512 levels accepted and deleted, 513 rejected) and
   `CheckedUpdateTests+Depth`.
 
+- **A sticky index is created for any index.** `StickyIndex.fromIndex` takes an
+  index before the start as the start and one past the end as the end, as yjs
+  does past the end. For a negative index yjs encodes an id before the first
+  item, which no document resolves; YSwift does not copy that. A malformed
+  update can drive a text's length below zero in yjs and here alike (a run
+  resent from its middle joins the run before it, even one of another text):
+  the length is reported as yjs reports it, and an index into such a text is
+  taken as above.
 - **Deep nesting is rendered, not refused.** Yjs renders XML elements
   recursively and throws from about 1172 nested levels; `YXmlFragment.toString`
   has no error to report and renders any depth.

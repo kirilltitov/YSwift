@@ -94,6 +94,9 @@ remains the frozen contract established during the migration to native Swift.
   they have no error to report (Yjs `undo()` throws deep enough). Pinned by the
   `nested_*` malformed golden vectors.
 
+- **Deep nesting is rendered, not refused.** Yjs renders XML elements
+  recursively and throws from about 1172 nested levels; `YXmlFragment.toString`
+  has no error to report and renders any depth.
 - **An awareness update with a clock of 2^53 or more is ignored.** lib0 fails to
   read most such clocks and JS numbers do not hold them exactly; y-protocols
   then throws, `Awareness.applyUpdate` has no error to report and drops the

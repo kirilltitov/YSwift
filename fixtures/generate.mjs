@@ -563,6 +563,10 @@ const deepScope = (depth, count) => [
   ])),
   deleteRanges(6, range(count, (i) => [2 * i, 1])),
 ]
+/** `depth` XML elements `p` of client 5, each a child of the one before. */
+const nestedElements = (depth) => rawUpdate(5, 0, range(depth, (k) => [
+  0x07, ...(k === 0 ? [1, ...varString(KEY)] : [0, 5, ...varUint(k - 1)]), 3, ...varString('p'),
+]))
 /** An update setting root map key `a` to a number, which replaces the key's current value. */
 const rootEntry = (client) => rawUpdate(client, 0, [[0x28, 1, ...varString(KEY), ...varString('a'), 1, 125, 1]])
 const range = (count, at) => Array.from({ length: count }, (_, index) => at(index))
@@ -575,8 +579,9 @@ const nestedChain = (client, depth, map) => rawUpdate(client, 0, Array.from({ le
 ]))
 
 /** With `tracked`, an UndoManager on the root tracks the updates from that index on (origin `r`) and,
- *  once all are applied, undoes and redoes the last of them. */
-function malformedFixture(name, description, updates, tracked = null) {
+ *  once all are applied, undoes and redoes the last of them. With `xml`, the root's XML string is
+ *  recorded too. */
+function malformedFixture(name, description, updates, { tracked = null, xml = false } = {}) {
   const doc = new Y.Doc()
   doc.clientID = 999
   const um = tracked === null
@@ -598,6 +603,7 @@ function malformedFixture(name, description, updates, tracked = null) {
   return {
     name, description, updates, ...(tracked === null ? {} : { tracked }),
     rejected, update: rejected === null ? b64(Y.encodeStateAsUpdate(doc)) : null,
+    ...(xml && rejected === null ? { xml: doc.getXmlFragment(KEY).toString() } : {}),
   }
 }
 
@@ -630,6 +636,9 @@ const malformed = [
   malformedFixture('parent_not_a_type', 'parent at a string item: the item is collected', [
     rawUpdate(5, 0, [rootString('ab'), mapEntryIn(5, 0, 'k')])]),
   // Size and depth: yjs accepts these; the document must survive them, and being dropped.
+  // Yjs renders nested elements recursively and throws from 1172 levels on; YSwift renders any depth.
+  malformedFixture('nested_elements', '1000 XML elements, each a child of the one before', [nestedElements(1000)],
+    { xml: true }),
   malformedFixture('huge_number_in_text', 'an any value 1e300 in the text, which observers render',
     [rawUpdate(5, 0, [rootAnyNumber(1e300)])]),
   malformedFixture('infinity_in_text', 'an any value -Infinity in the text, which observers render',
@@ -646,9 +655,9 @@ const malformed = [
   malformedFixture('nested_map_chain_deleted_too_deep', '5000 nested maps, the outermost deleted', [
     nestedChain(5, 5000, true), deleteRanges(5, [[0, 1]])]),
   malformedFixture('nested_lists_redone_innermost_first', '2000 nested lists deleted innermost first, undone, redone',
-    nestedAcrossClients(2000), 1),
+    nestedAcrossClients(2000), { tracked: 1 }),
   malformedFixture('deep_scope_undone', '4000 units deleted 2000 lists deep in the scope, undone, redone',
-    deepScope(2000, 4000), 1),
+    deepScope(2000, 4000), { tracked: 1 }),
   malformedFixture('nested_map_chain_replaced_too_deep', '5000 nested maps, the outermost replaced', [
     nestedChain(5, 5000, true), rootEntry(6)]),
   malformedFixture('surrogate_pairs_split', 'deletes splitting surrogate pairs near either end of a string', [

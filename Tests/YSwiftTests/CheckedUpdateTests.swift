@@ -143,6 +143,7 @@ struct CheckedUpdateTests {
             let tracked: Int?
             let rejected: Int?
             let update: String?
+            let xml: String?
         }
         let malformed: [Case]
     }
@@ -151,6 +152,7 @@ struct CheckedUpdateTests {
         var rejected: Int?
         var error: YError?
         var state: String
+        var xml = ""
     }
 
     /// Applies the updates to a fresh document one per transaction, as the fixture generator does, and
@@ -172,7 +174,12 @@ struct CheckedUpdateTests {
         }
         undoManager?.undo()
         undoManager?.redo()
-        return Replay(state: target.transact { target.encodeStateAsUpdate($0).base64EncodedString() })
+        return target.transact { transaction in
+            Replay(
+                state: target.encodeStateAsUpdate(transaction).base64EncodedString(),
+                xml: target.xmlFragment("content").toString(transaction)
+            )
+        }
     }
 
     /// Runs `body` on a thread with the 512 KiB stack of a Swift concurrency worker, so that a recursion
@@ -207,6 +214,9 @@ struct CheckedUpdateTests {
             #expect(replay.rejected == fixture.rejected, "\(fixture.name): rejected update")
             if replay.rejected != nil {
                 #expect(replay.error == .invalidUpdate, "\(fixture.name)")
+            }
+            if let xml = fixture.xml {
+                #expect(replay.xml == xml, "\(fixture.name): xml")
             }
             if let update = fixture.update {
                 #expect(replay.state == update, "\(fixture.name): state")
@@ -254,6 +264,20 @@ struct CheckedUpdateTests {
         subscription.cancel()
         #expect(deltas.withLock { $0 } == [[.insert(.double(value), attributes: nil)]])
         #expect(target.transact { target.encodeStateAsUpdate($0).base64EncodedString() } == fixture.update)
+    }
+
+    @Test("elements nested deeper than yjs renders are rendered without recursion")
+    func rendersDeeplyNestedElements() {
+        let depth = 10000
+        var bytes: [UInt8] = [1] + Self.varUint(UInt64(depth)) + [5, 0]
+        for level in 0..<depth {
+            bytes += [7] + (level == 0 ? [1] + Self.varString("content") : [0, 5] + Self.varUint(UInt64(level - 1)))
+            bytes += [3] + Self.varString("p")
+        }
+        let update = Data(bytes + [0])
+        let replay = Self.onWorkerSizedStack { Self.replay([update]) }
+        #expect(replay.rejected == nil)
+        #expect(replay.xml == String(repeating: "<p>", count: depth) + String(repeating: "</p>", count: depth))
     }
 
     @Test("undoing a step deep inside the scope takes time in proportion to the step")

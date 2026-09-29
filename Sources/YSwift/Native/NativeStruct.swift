@@ -24,15 +24,15 @@ func sameID(_ lhs: YID?, _ rhs: YID?) -> Bool {
 
 /// The integrated payload of an `Item`. Mirrors yjs `Content*` classes; only the
 /// fields needed to converge and to render text are modelled. Text is UTF-16 code units
-/// so offsets match JS string semantics exactly, held as a slice so that splitting a long
-/// string does not copy all of it (JS strings slice without copying too).
+/// so offsets match JS string semantics exactly. Runs are held as slices so that splitting
+/// a long one does not copy all of it (see `splice`).
 enum Content {
     case string(ArraySlice<UInt16>)  // ContentString
     case format(key: String, valueJSON: String)  // ContentFormat (raw JSON value)
     case embed(json: String)  // ContentEmbed (raw JSON)
     case deleted(UInt64)  // ContentDeleted
-    case any([Lib0Any])  // ContentAny
-    case json([String])  // ContentJSON (raw element strings)
+    case any(ArraySlice<Lib0Any>)  // ContentAny
+    case json(ArraySlice<String>)  // ContentJSON (raw element strings)
     case binary([UInt8])  // ContentBinary
     case type(YTypeImpl, typeRef: UInt64, name: String?)  // ContentType
     case doc(guid: String, options: Lib0Any)  // ContentDoc
@@ -62,21 +62,8 @@ enum Content {
     mutating func splice(_ offset: Int) -> Content {
         switch self {
         case .string(var units):
-            // The smaller half is copied out and the larger one keeps the storage, alone: a split
-            // costs at most the smaller half, however long the string, and no half holds on to the
-            // capacity of the whole.
             self = .deleted(0)
-            let split = units.startIndex + offset
-            var left: ArraySlice<UInt16>
-            var right: ArraySlice<UInt16>
-            if offset <= units.count - offset {
-                left = Array(units[..<split])[...]
-                right = units[split...]
-            } else {
-                left = units[..<split]
-                right = Array(units[split...])[...]
-            }
-            units = []
+            var (left, right) = Self.split(&units, at: offset)
             // yjs replaces a split surrogate pair with U+FFFD on both halves.
             if let last = left.last, last >= 0xD800, last <= 0xDBFF {
                 left[left.index(before: left.endIndex)] = 0xFFFD
@@ -87,17 +74,35 @@ enum Content {
         case .deleted(let count):
             self = .deleted(UInt64(offset))
             return .deleted(count - UInt64(offset))
-        case .any(let items):
-            let right = Array(items[offset...])
-            self = .any(Array(items[..<offset]))
+        case .any(var items):
+            self = .deleted(0)
+            let (left, right) = Self.split(&items, at: offset)
+            self = .any(left)
             return .any(right)
-        case .json(let items):
-            let right = Array(items[offset...])
-            self = .json(Array(items[..<offset]))
+        case .json(var items):
+            self = .deleted(0)
+            let (left, right) = Self.split(&items, at: offset)
+            self = .json(left)
             return .json(right)
         case .format, .embed, .binary, .type, .doc:
             preconditionFailure("splice() called on non-splittable content")
         }
+    }
+
+    /// Splits `elements` after `offset` of them, leaving it empty. The smaller half is copied out
+    /// and the larger one keeps the storage, alone: a split costs at most the smaller half however
+    /// long the run, and neither half holds on to much more storage than it uses.
+    private static func split<Element>(
+        _ elements: inout ArraySlice<Element>,
+        at offset: Int,
+    ) -> (left: ArraySlice<Element>, right: ArraySlice<Element>) {
+        let split = elements.startIndex + offset
+        let halves =
+            offset <= elements.count - offset
+            ? (Array(elements[..<split])[...], elements[split...])
+            : (elements[..<split], Array(elements[split...])[...])
+        elements = []
+        return halves
     }
 
     /// Content type tag written into the low 5 bits of an item's info byte
@@ -164,10 +169,10 @@ enum Content {
             encoder.writeVarUint(count - UInt64(offset))
         case .any(let items):
             encoder.writeVarUint(UInt64(items.count - offset))
-            for index in offset..<items.count { encoder.writeAny(items[index]) }
+            for item in items.dropFirst(offset) { encoder.writeAny(item) }
         case .json(let items):
             encoder.writeVarUint(UInt64(items.count - offset))
-            for index in offset..<items.count { encoder.writeVarString(items[index]) }
+            for item in items.dropFirst(offset) { encoder.writeVarString(item) }
         case .binary(let bytes):
             encoder.writeVarUint8Array(bytes)
         case .embed(let json):

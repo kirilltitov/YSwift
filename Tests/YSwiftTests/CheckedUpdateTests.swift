@@ -230,6 +230,35 @@ struct CheckedUpdateTests {
         }
     }
 
+    /// Where the elements of a run's payload start in memory.
+    private static func storage(of content: Content) -> UnsafeRawPointer? {
+        switch content {
+        case .string(let units): units.withUnsafeBufferPointer { UnsafeRawPointer($0.baseAddress) }
+        case .any(let items): items.withUnsafeBufferPointer { UnsafeRawPointer($0.baseAddress) }
+        case .json(let items): items.withUnsafeBufferPointer { UnsafeRawPointer($0.baseAddress) }
+        default: nil
+        }
+    }
+
+    @Test("splitting a run copies its smaller half and leaves the storage to the larger one")
+    func splitsCopyTheSmallerHalf() throws {
+        let runs: [(content: Content, stride: Int)] = [
+            (.string(.init(repeating: 0x78, count: 1000)), MemoryLayout<UInt16>.stride),
+            (.any(.init(repeating: .bool(false), count: 1000)), MemoryLayout<Lib0Any>.stride),
+            (.json(.init(repeating: "false", count: 1000)), MemoryLayout<String>.stride),
+        ]
+        for run in runs {
+            var content = run.content
+            let start = try #require(Self.storage(of: content))
+            let right = content.splice(10)
+            #expect(Self.storage(of: right) == start.advanced(by: 10 * run.stride), "\(content.ref): right")
+            var whole = run.content
+            let tail = whole.splice(990)
+            #expect(Self.storage(of: whole) == start, "\(content.ref): left")
+            #expect(tail.length == 10)
+        }
+    }
+
     private static func malformedUpdates() -> [(name: String, bytes: Data)] {
         var clientOverflow: [UInt8] = [1, 1]
         clientOverflow += Self.varUint((UInt64(1) << 53))

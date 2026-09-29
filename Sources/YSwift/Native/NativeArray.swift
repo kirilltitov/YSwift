@@ -40,7 +40,7 @@ final class NativeArray {
             let newItem = Item(
                 id: YID(client: self.doc.clientID, clock: store.getState(self.doc.clientID)),
                 origin: left?.lastId, rightOrigin: right?.id,
-                parent: self.type, parentID: nil, parentSub: nil, content: .any(values))
+                parent: self.type, parentID: nil, parentSub: nil, content: .any(values[...]))
             newItem.left = left
             newItem.right = right
             newItem.integrate(store, offset: 0)

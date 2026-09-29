@@ -527,6 +527,7 @@ const rawUpdate = (client, clock, structs) =>
   b64(new Uint8Array([1, ...varUint(structs.length), ...varUint(client), ...varUint(clock), ...structs.flat(), 0]))
 const rootString = (text) => [0x04, 1, ...varString(KEY), ...varString(text)]
 const rootMapType = () => [0x07, 1, ...varString(KEY), 1]
+const rootAnyFalse = (count) => [0x08, 1, ...varString(KEY), ...varUint(count), ...new Array(count).fill(121)]
 const stringAfter = (client, clock, text) => [0x84, ...varUint(client), ...varUint(clock), ...varString(text)]
 const stringBefore = (client, clock, text) => [0x44, ...varUint(client), ...varUint(clock), ...varString(text)]
 const embedAfter = (client, clock, json) => [0x85, ...varUint(client), ...varUint(clock), ...varString(json)]
@@ -595,6 +596,8 @@ const malformed = [
     rawUpdate(5, 0, [rootString('x'.repeat(40000))]), deleteRanges(5, range(4000, (i) => [i * 10 + 5, 1]))]),
   malformedFixture('long_run_merged', '15 000 one-unit items typed one after another, merged into one', [
     rawUpdate(5, 0, [rootString('x'), ...range(14999, (i) => stringAfter(5, i, 'x'))])]),
+  malformedFixture('any_run_split_by_origins', 'a run of 20 000 any values split by 2000 items, merged back', [
+    rawUpdate(5, 0, [rootAnyFalse(20000)]), rawUpdate(6, 0, range(2000, (i) => stringAfter(5, i * 10 + 5, 'y')))]),
   malformedFixture('long_string_split_by_origins', 'a 40 000-unit string split by 4000 items, merged back', [
     rawUpdate(5, 0, [rootString('x'.repeat(40000))]), rawUpdate(6, 0, range(4000, (i) => stringAfter(5, i * 10 + 5, 'y')))]),
 ]

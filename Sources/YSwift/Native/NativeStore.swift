@@ -486,15 +486,15 @@ final class NativeStore {
         return pos - first
     }
 
-    /// Applies a decoded delete set: splits at range boundaries and marks the
-    /// covered items deleted (`readAndApplyDeleteSet`). Returns true if any delete
-    /// referenced clocks not yet present (so the caller can buffer + retry).
-    @discardableResult
-    func applyDeleteSet(_ deleteSet: DeleteSetData) -> Bool {
-        var dropped = false
-        for client in deleteSet.clients {
+    /// Applies a delete set: splits at range boundaries and marks the covered items deleted
+    /// (`readAndApplyDeleteSet`). Returns the ranges of clocks not present yet, to be applied later.
+    func applyDeleteSet(_ deleteSet: DeleteRanges) -> DeleteRanges {
+        var unapplied: DeleteRanges = []
+        for client in deleteSet {
+            var rest: [(clock: UInt64, length: UInt64)] = []
+            defer { if !rest.isEmpty { unapplied.append((client.client, rest)) } }
             guard var structs = clients[client.client], !structs.isEmpty else {
-                if !client.ranges.isEmpty { dropped = true }
+                rest = client.ranges
                 continue
             }
             let state = self.getState(client.client)
@@ -502,10 +502,10 @@ final class NativeStore {
                 let clock = range.clock
                 let clockEnd = clock + range.length
                 guard clock < state else {
-                    dropped = true
+                    rest.append(range)
                     continue
                 }
-                if state < clockEnd { dropped = true }  // tail [state, clockEnd) not yet present
+                if state < clockEnd { rest.append((state, clockEnd - state)) }
                 var index = self.findIndex(structs, clock)
                 if let item = structs[index] as? Item, !item.deleted, item.id.clock < clock {
                     structs.insert(splitItem(item, Int(clock - item.id.clock)), at: index + 1)
@@ -525,6 +525,6 @@ final class NativeStore {
             }
             clients[client.client] = structs
         }
-        return dropped
+        return unapplied
     }
 }

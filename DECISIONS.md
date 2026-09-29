@@ -176,10 +176,16 @@ remains the frozen contract established during the migration to native Swift.
 
 ## Known limitations
 
-- **Updates waiting for dependencies are kept whole** and retried as whole
-  updates; `encodeStateAsUpdate` leaves them out. Yjs keeps the waiting structs
-  merged into one pending update and includes it in `encodeStateAsUpdate`, so
-  while something waits the encoded states differ.
+- **Structs and deletions waiting for dependencies are kept as yjs keeps
+  them**: only the part of an update that cannot integrate waits, merged with
+  what already waits as `mergeUpdatesV2` merges it (slicing a run the other
+  part holds, whose rest then takes its parent from its new origin), and it is
+  retried once, as one update, when a clock it misses arrives; a retry that
+  throws drops it, and the update that set it off reports the error. Waiting
+  deletions are tried again with every update. `encodeStateAsUpdate` leaves
+  what waits out; yjs includes it, so while something waits the encoded states
+  differ. Yjs's V2 encoding of waiting deletions whose ranges overlap out of
+  order writes negative deltas and corrupts them; YSwift keeps them intact.
 
 - **Multi-attribute `format` byte order.** The public `Attributes` (and XML
   attribute) dictionaries are unordered, so a multi-attribute text `format` or

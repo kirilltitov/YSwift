@@ -145,6 +145,8 @@ struct CheckedUpdateTests {
             let rejected: Int?
             let yswiftRejects: Int?
             let unlimited: Bool?
+            let keepGoing: Bool?
+            let rejectedAll: [Int]?
             let update: String?
             let xml: String?
         }
@@ -153,6 +155,7 @@ struct CheckedUpdateTests {
 
     struct Replay: Sendable {
         var rejected: Int?
+        var rejectedAll: [Int] = []
         var error: YError?
         var state: String
         var xml = ""
@@ -161,26 +164,36 @@ struct CheckedUpdateTests {
     /// Applies the updates to a fresh document one per transaction, as the fixture generator does, and
     /// drops the document before returning. With `tracked`, an UndoManager on the root tracks the updates
     /// from that index on and, once all are applied, undoes and redoes the last of them. `unlimited`
-    /// lifts the limit on nesting depth, to build deeper documents than remote updates may.
-    static func replay(_ updates: [Data], tracked: Int? = nil, gc: Bool = true, unlimited: Bool = false) -> Replay {
+    /// lifts the limit on nesting depth, to build deeper documents than remote updates may. With `keepGoing`,
+    /// the updates after a rejected one are applied too.
+    static func replay(
+        _ updates: [Data],
+        tracked: Int? = nil,
+        gc: Bool = true,
+        unlimited: Bool = false,
+        keepGoing: Bool = false,
+    ) -> Replay {
         let target = YDoc(clientID: 999, gc: gc)
         if unlimited { (target.engine as? NativeEngine)?.doc.store.nestingLimit = .max }
         let origin = Origin("r")
         let undoManager = tracked.map { _ in
             UndoManager(target.text("content"), trackedOrigins: [origin], captureTimeout: .zero)
         }
+        var rejectedAll: [Int] = []
         for (index, update) in updates.enumerated() {
             do {
                 let isTracked = tracked.map { index >= $0 } ?? false
                 try target.transact(origin: isTracked ? origin : nil) { try target.applyUpdateChecked($0, update) }
             } catch {
-                return Replay(rejected: index, error: error as? YError, state: "")
+                guard keepGoing else { return Replay(rejected: index, error: error as? YError, state: "") }
+                rejectedAll.append(index)
             }
         }
         undoManager?.undo()
         undoManager?.redo()
         return target.transact { transaction in
             Replay(
+                rejectedAll: rejectedAll,
                 state: target.encodeStateAsUpdate(transaction).base64EncodedString(),
                 xml: target.xmlFragment("content").toString(transaction)
             )
@@ -231,9 +244,11 @@ struct CheckedUpdateTests {
             let tracked = fixture.tracked
             let gc = fixture.gc ?? true
             let unlimited = fixture.unlimited ?? false
+            let keepGoing = fixture.keepGoing ?? false
             let replay = Self.onWorkerSizedStack(fixture.name) {
-                Self.replay(updates, tracked: tracked, gc: gc, unlimited: unlimited)
+                Self.replay(updates, tracked: tracked, gc: gc, unlimited: unlimited, keepGoing: keepGoing)
             }
+            #expect(replay.rejectedAll == fixture.rejectedAll ?? [], "\(fixture.name): rejected updates")
             #expect(replay.rejected == fixture.yswiftRejects ?? fixture.rejected, "\(fixture.name): rejected update")
             if replay.rejected != nil {
                 #expect(replay.error == .invalidUpdate, "\(fixture.name)")

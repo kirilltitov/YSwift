@@ -602,19 +602,23 @@ const nestedChain = (client, depth, map) => rawUpdate(client, 0, Array.from({ le
  *  recorded too. `gc: false` replays into a document that keeps deleted content. YSwift rejects nesting
  *  deeper than browsers can delete, which yjs accepts: `yswiftRejects` is the index of the update it
  *  rejects on purpose, and `unlimited` replays with that limit lifted, for the deep documents that
- *  check how YSwift handles depth. */
+ *  check how YSwift handles depth. With `keepGoing`, the document takes the updates after a rejected
+ *  one too: `rejectedAll` lists every rejected index. */
 function malformedFixture(name, description, updates,
-  { tracked = null, xml = false, gc = true, yswiftRejects = null, unlimited = false } = {}) {
+  { tracked = null, xml = false, gc = true, yswiftRejects = null, unlimited = false, keepGoing = false } = {}) {
   const doc = new Y.Doc({ gc })
   doc.clientID = 999
   const um = tracked === null
     ? null
     : new Y.UndoManager(doc.getText(KEY), { trackedOrigins: new Set(['r']), captureTimeout: 0 })
   let rejected = null
+  const rejectedAll = []
   for (const [index, update] of updates.entries()) {
     try {
       Y.applyUpdate(doc, Buffer.from(update, 'base64'), um !== null && index >= tracked ? 'r' : null)
     } catch {
+      rejectedAll.push(index)
+      if (keepGoing) continue
       rejected = index
       break
     }
@@ -626,6 +630,7 @@ function malformedFixture(name, description, updates,
   return {
     name, description, updates, ...(tracked === null ? {} : { tracked }), ...(gc ? {} : { gc }),
     ...(yswiftRejects === null ? {} : { yswiftRejects }), ...(unlimited ? { unlimited } : {}),
+    ...(keepGoing ? { keepGoing, rejectedAll } : {}),
     rejected, update: rejected === null ? b64(Y.encodeStateAsUpdate(doc)) : null,
     ...(xml && rejected === null ? { xml: doc.getXmlFragment(KEY).toString() } : {}),
   }
@@ -693,6 +698,23 @@ const malformed = [
         rawUpdate(5, 0, [rootListType(), stringIn(5, 0, 'xy')]), rawUpdate(5, 2, [stringAfter(6, 0, 'ab')]),
         rawUpdateDeleting(6, 0, [rootString('z')], 5, [[0, 1]])], { gc }),
   ]),
+  // Structs waiting for missing clocks are kept merged into one update, as yjs keeps them, and retried
+  // once when a later update brings a clock they miss; a retry that throws drops them, and the update
+  // that set it off reports the error, while later updates apply.
+  malformedFixture('pending_retry_throws_then_later_updates_apply', 'a waiting item with a right origin never reached', [
+    rawUpdate(5, 0, [[0xc4, 6, 0, 5, 5, ...varString('a')]]), rawUpdate(6, 0, [rootString('b')]),
+    rawUpdate(8, 0, [rootString('c')]), rawUpdate(9, 0, [rootString('d')])], { keepGoing: true }),
+  // Merging the waiting structs slices a run the document partly holds and gives the rest an origin in
+  // the run itself, so it takes the run's parent. The order in which yjs integrates the merged structs,
+  // higher clients first, is the order an UndoManager redoes them in.
+  // Yjs's merge compares a GC struct and an item at one clock as each going first; V8's sort then puts
+  // the later update's item first, and the waiting GC struct is sliced away behind it.
+  malformedFixture('pending_gc_and_item_at_one_clock', 'a waiting GC struct and a waiting item at its clock', [
+    rawUpdate(5, 2, [gcStruct(2)]), rawUpdate(5, 2, [stringAfter(5, 1, 'xyz')]), rawUpdate(5, 0, [rootString('ab')])]),
+  malformedFixture('pending_merged_then_redone', 'two waiting items of two clients, integrated together, undone, redone', [
+    b64(Buffer.from('0101d19389d90400450c00077b2262223a327d00', 'hex')),
+    b64(Buffer.from('0101dfdddde00900440c0005697961626700', 'hex')), rawUpdate(12, 0, [rootMapType()]),
+  ], { tracked: 1 }),
   // Size and depth: yjs accepts these; the document must survive them, and being dropped. The deep ones
   // are replayed with YSwift's nesting limit lifted.
   // Yjs renders nested elements recursively and throws from 1172 levels on; YSwift renders any depth.

@@ -1479,6 +1479,45 @@
       "update": "AgEGAAQBB2NvbnRlbnQBegMFAAcBB2NvbnRlbnQABAAFAAJ4eYQFAgFiAQUBAAM="
     },
     {
+      "name": "pending_retry_throws_then_later_updates_apply",
+      "description": "a waiting item with a right origin never reached",
+      "updates": [
+        "AQEFAMQGAAUFAWEA",
+        "AQEGAAQBB2NvbnRlbnQBYgA=",
+        "AQEIAAQBB2NvbnRlbnQBYwA=",
+        "AQEJAAQBB2NvbnRlbnQBZAA="
+      ],
+      "keepGoing": true,
+      "rejectedAll": [
+        1
+      ],
+      "rejected": null,
+      "update": "AwEJAAQBB2NvbnRlbnQBZAEIAAQBB2NvbnRlbnQBYwEGAAQBB2NvbnRlbnQBYgA="
+    },
+    {
+      "name": "pending_gc_and_item_at_one_clock",
+      "description": "a waiting GC struct and a waiting item at its clock",
+      "updates": [
+        "AQEFAgACAA==",
+        "AQEFAoQFAQN4eXoA",
+        "AQEFAAQBB2NvbnRlbnQCYWIA"
+      ],
+      "rejected": null,
+      "update": "AQEFAAQBB2NvbnRlbnQFYWJ4eXoA"
+    },
+    {
+      "name": "pending_merged_then_redone",
+      "description": "two waiting items of two clients, integrated together, undone, redone",
+      "updates": [
+        "AQHRk4nZBABFDAAHeyJiIjoyfQA=",
+        "AQHf3d3gCQBEDAAFaXlhYmcA",
+        "AQEMAAcBB2NvbnRlbnQBAA=="
+      ],
+      "tracked": 1,
+      "rejected": null,
+      "update": "BAHf3d3gCQBEDAAFaXlhYmcB0ZOJ2QQARQwAB3siYiI6Mn0D5wcARdGTidkEAAd7ImIiOjJ9xNGTidkEAN/d3eAJAAVpeWFiZ8ff3d3gCQQMAAEBDAAHAQdjb250ZW50AQPf3d3gCQEABdGTidkEAQABDAEAAQ=="
+    },
+    {
       "name": "nested_elements",
       "description": "1000 XML elements, each a child of the one before",
       "updates": [

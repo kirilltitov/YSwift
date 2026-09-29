@@ -1,9 +1,9 @@
 // The pure-Swift document engine core: applies a decoded v1 update into the arena
 // store and materialises text / state vectors. Ports yjs `utils/encoding.js`
 // (`readClientsStructRefs` + `integrateStructs` + the struct/delete-set apply
-// order of `readUpdateV2`). Updates that causally depend on data not yet present
-// are buffered and retried as later updates arrive (see `pendingUpdates`), so
-// out-of-order / partial delivery converges.
+// order of `readUpdateV2`). Structs and deletions that causally depend on data not
+// yet present wait, as in yjs, and are retried as later updates arrive (see
+// `pendingStructs`), so out-of-order / partial delivery converges.
 
 import Synchronization
 
@@ -11,7 +11,7 @@ import Synchronization
 /// `{ i, refs }` records in yjs `readClientsStructRefs`.
 private final class ClientRefs {
     var i = 0
-    let refs: [Struct]
+    var refs: [Struct]
     init(refs: [Struct]) { self.refs = refs }
 }
 
@@ -279,19 +279,25 @@ final class NativeDoc {
 
     // MARK: Apply
 
-    /// Updates that could not fully integrate yet (they reference structs/clocks
-    /// not present). Retried as later updates arrive, so out-of-order or partial
-    /// delivery converges (the role of yjs `pendingStructs` / `pendingDs`).
-    private var pendingUpdates: [[UInt8]] = []
+    /// Structs waiting for clocks the document lacks (yjs `store.pendingStructs`).
+    private var pendingStructs: PendingStructs?
+    /// Deletions of clocks the document lacks (yjs `store.pendingDs`), tried again with every update.
+    private var pendingDeletes: DeleteRanges?
 
-    var hasPendingUpdates: Bool { !self.pendingUpdates.isEmpty }
+    var hasPendingUpdates: Bool { self.pendingStructs != nil || self.pendingDeletes != nil }
 
-    /// Decodes and integrates a v1 update; buffers and retries anything that
-    /// depends on data not yet present.
+    /// Decodes and integrates a v1 update; what depends on data not yet present waits for it.
     func applyUpdate(_ bytes: [UInt8]) throws {
         self.txnAppliedUpdate = true
-        if try self.integrate(bytes) { self.pendingUpdates.append(bytes) }
-        try self.retryPending()
+        let parsed = try UpdateCodec.readUpdate(bytes)
+        let deletes = parsed.deleteSet.clients.map { entry in
+            (client: entry.client, ranges: entry.ranges.map { (clock: $0.clock, length: $0.length) })
+        }
+        // Where yjs runs out of stack deleting nested types, the update is rejected, as it is there
+        // once partly applied, and so is nesting deeper than browsers can delete.
+        self.store.limitsDeletionDepth = true
+        defer { self.store.limitsDeletionDepth = false }
+        try self.readUpdate(self.buildClientRefs(parsed.clientBlocks), deletes: deletes)
         // Yjs collects the transaction's deletions when it ends, and throws where that fails; this
         // update is rejected instead, as the commit that collects has no error to report.
         if self.gc, let deletes = self.store.deleteLog, self.store.collectionFails(deletes) {
@@ -299,36 +305,34 @@ final class NativeDoc {
         }
     }
 
-    /// Integrates one update in place. Returns true if some structs or deletes were
-    /// left unapplied (missing causal dependencies).
-    private func integrate(_ bytes: [UInt8]) throws -> Bool {
-        let parsed = try UpdateCodec.readUpdate(bytes)
-        let refs = self.buildClientRefs(parsed.clientBlocks)
-        // Where yjs runs out of stack deleting nested types, the update is rejected, as it is there
-        // once partly applied, and so is nesting deeper than browsers can delete.
-        self.store.limitsDeletionDepth = true
+    /// Yjs `readUpdateV2`: integrates the structs and merges what cannot integrate yet into the waiting
+    /// structs, applies the deletions and then the waiting ones, and, once a clock the waiting structs
+    /// miss has arrived, integrates them again as one update. A retry that throws has dropped them.
+    private func readUpdate(_ refs: [UInt64: ClientRefs], deletes: DeleteRanges) throws {
         self.store.remoteDeletionFailed = false
-        defer { self.store.limitsDeletionDepth = false }
-        let structsDropped = try self.integrateStructs(refs)
+        let rest = try self.integrateStructs(refs)
         guard !self.store.remoteDeletionFailed else { throw YError.invalidUpdate }
-        let deletesDropped = self.store.applyDeleteSet(parsed.deleteSet)
+        var retry = false
+        if let pending = self.pendingStructs {
+            retry = pending.missing.contains { $0.value < self.store.getState($0.key) }
+            if let rest { self.pendingStructs = pending.merged(with: rest) }
+        } else {
+            self.pendingStructs = rest
+        }
+        let deletesRest = self.store.applyDeleteSet(deletes)
+        if let pendingDeletes = self.pendingDeletes {
+            let pendingRest = self.store.applyDeleteSet(pendingDeletes)
+            self.pendingDeletes =
+                deletesRest.isEmpty || pendingRest.isEmpty
+                ? [deletesRest, pendingRest].first { !$0.isEmpty }
+                : mergeDeleteRanges(deletesRest, pendingRest)
+        } else {
+            self.pendingDeletes = deletesRest.isEmpty ? nil : deletesRest
+        }
         guard !self.store.remoteDeletionFailed else { throw YError.invalidUpdate }
-        return structsDropped || deletesDropped
-    }
-
-    /// Re-applies buffered updates until a full pass integrates nothing new. Each
-    /// re-application is idempotent (already-present structs are skipped by offset;
-    /// re-deletes are no-ops), and a fully-integrated update leaves the buffer.
-    private func retryPending() throws {
-        guard !self.pendingUpdates.isEmpty else { return }
-        while true {
-            let before = self.store.integratedCount
-            var stillPending: [[UInt8]] = []
-            for update in self.pendingUpdates {
-                if try self.integrate(update) { stillPending.append(update) }
-            }
-            self.pendingUpdates = stillPending
-            if self.pendingUpdates.isEmpty || self.store.integratedCount == before { break }
+        if retry, let pending = self.pendingStructs {
+            self.pendingStructs = nil
+            try self.readUpdate(pending.structs.mapValues { ClientRefs(refs: $0) }, deletes: [])
         }
     }
 
@@ -389,15 +393,19 @@ final class NativeDoc {
 
     /// Integrates structs honouring causal dependencies (yjs `integrateStructs`).
     /// The dependency stack lets a struct from a higher client wait for referenced
-    /// data in a lower client. Returns true if some structs could not integrate
-    /// (missing causal deps) — the caller buffers the update and retries it later. Throws on a
+    /// data in a lower client. Returns the structs that could not integrate (missing
+    /// causal deps) with the lowest missing clock per client, or nil. Throws on a
     /// reference that can never resolve (`Item.getMissing`).
-    private func integrateStructs(_ clientsStructRefs: [UInt64: ClientRefs]) throws -> Bool {
+    private func integrateStructs(_ refs: [UInt64: ClientRefs]) throws -> PendingStructs? {
+        var clientsStructRefs = refs
         var ids = clientsStructRefs.keys.sorted()
-        guard !ids.isEmpty else { return false }
+        guard !ids.isEmpty else { return nil }
 
         var stack: [Struct] = []
-        var droppedStructs = false
+        var rest = PendingStructs(missing: [:], structs: [:])
+        func updateMissing(_ client: UInt64, _ clock: UInt64) {
+            if rest.missing[client].map({ $0 > clock }) ?? true { rest.missing[client] = clock }
+        }
         var state: [UInt64: UInt64] = [:]
         func cachedState(_ client: UInt64) -> UInt64 {
             if let value = state[client] { return value }
@@ -417,16 +425,25 @@ final class NativeDoc {
 
         // Sets aside the current stack when a dependency isn't satisfiable yet, with the rest of each
         // of its clients' structs (`addStackToRestSS`): those are not even looked at until it is.
-        func dropStack() {
-            if !stack.isEmpty { droppedStructs = true }
+        func addStackToRest() {
             for item in stack {
-                ids.removeAll { $0 == item.id.client }
-                if let target = clientsStructRefs[item.id.client] { target.i = target.refs.count }
+                let client = item.id.client
+                if let target = clientsStructRefs[client] {
+                    // The item was the last one taken from its client's structs.
+                    target.i -= 1
+                    rest.structs[client] = Array(target.refs[target.i...])
+                    clientsStructRefs[client] = nil
+                    target.i = 0
+                    target.refs = []
+                } else {
+                    rest.structs[client] = [item]
+                }
+                ids.removeAll { $0 == client }
             }
             stack.removeAll(keepingCapacity: true)
         }
 
-        guard var current = nextTarget() else { return false }
+        guard var current = nextTarget() else { return nil }
         var head = current.refs[current.i]
         current.i += 1
 
@@ -436,7 +453,8 @@ final class NativeDoc {
                 let offset = Int(localClock) - Int(head.id.clock)
                 if offset < 0 {
                     stack.append(head)
-                    dropStack()
+                    updateMissing(head.id.client, head.id.clock - 1)
+                    addStackToRest()
                 } else if let missing = try head.getMissing(self.store) {
                     stack.append(head)
                     let dependency = clientsStructRefs[missing]
@@ -445,7 +463,8 @@ final class NativeDoc {
                         dependency.i += 1
                         continue
                     }
-                    dropStack()
+                    updateMissing(missing, self.store.getState(missing))
+                    addStackToRest()
                 } else if offset == 0 || offset < Int(head.length) {
                     // Yjs links a run resent from its middle in after the struct just before its first
                     // new clock and reads that struct's right neighbour; a GC struct has none, and yjs
@@ -477,7 +496,7 @@ final class NativeDoc {
                 break
             }
         }
-        return droppedStructs
+        return rest.structs.isEmpty ? nil : rest
     }
 
     // MARK: Materialisation

@@ -921,6 +921,55 @@ const MERGED_ENTRY = {
   },
 }
 
+// Transaction cleanup (Transaction.js `cleanupTransactions`): Yjs collects and merges only what a
+// transaction touched — its delete set, the structs it added and the structs it split
+// (`_mergeStructs`) — so a merge Yjs never attempts must not happen in YSwift either.
+const CLEANUP = {
+  // Overwritten (no longer current) values of a nested map become GC structs when the map is
+  // collected, but they are in no delete set, not new and not in `_mergeStructs`: with a live item
+  // between them and the deleted range, Yjs leaves them unmerged.
+  cleanup_overwritten_values_isolated_remote: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(2, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'a', 'v1')), sync(0, 1),
+      tx(0, 'b', nset(0, 'b', 'v1')), sync(0, 1), tx(0, 'b', ins('t', 0, 'z')), sync(0, 1),
+      tx(0, 'b', nset(0, 'a', 'v2')), sync(0, 1), tx(0, 'b', nset(0, 'b', 'v2')), sync(0, 1),
+      tx(0, 'b', del('t', 3, 1)), sync(0, 1)],
+  },
+  cleanup_overwritten_values_isolated_local: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(2, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'a', 'v1')), sync(0, 1),
+      tx(0, 'b', nset(0, 'b', 'v1')), sync(0, 1), tx(0, 'b', ins('t', 0, 'z')), sync(0, 1),
+      tx(0, 'b', nset(0, 'a', 'v2')), sync(0, 1), tx(0, 'b', nset(0, 'b', 'v2')), sync(0, 1),
+      tx(1, null, del('t', 3, 1)), sync(1, 0)],
+  },
+  // Control: without the live item, the merges that start at the deleted range reach the old values.
+  cleanup_overwritten_values_chain_reaches: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(2, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'a', 'v1')), sync(0, 1),
+      tx(0, 'b', nset(0, 'b', 'v1')), sync(0, 1), tx(0, 'b', nset(0, 'a', 'v2')), sync(0, 1),
+      tx(0, 'b', nset(0, 'b', 'v2')), sync(0, 1), tx(0, 'b', del('t', 2, 1)), sync(0, 1)],
+  },
+  // Values deleted before their map are merged through ContentType.delete's `_mergeStructs` push.
+  cleanup_deleted_current_values_merge_via_merge_structs: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(2, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'a', 'v1')), sync(0, 1),
+      tx(0, 'b', nset(0, 'b', 'v1')), sync(0, 1), tx(0, 'b', ins('t', 0, 'z')), sync(0, 1),
+      tx(0, 'b', ndel(0, 'a')), sync(0, 1), tx(0, 'b', ndel(0, 'b')), sync(0, 1), tx(0, 'b', del('t', 3, 1)),
+      sync(0, 1)],
+  },
+}
+// A map created by one client, its keys set by another, and the map deleted in one transaction: Yjs
+// collects every client before it merges any, so the children's GC structs merge whichever client
+// comes first. Several client pairs, because the order YSwift used to walk them was hash order.
+for (const [c1, c2] of [[1, 2], [2, 1], [3, 7], [7, 3], [11, 5], [5, 11], [100, 200], [200, 100], [4, 13], [13, 4],
+  [21, 22], [22, 21]]) {
+  CLEANUP[`cleanup_cross_client_children_${c1}_${c2}`] = {
+    docs: [peer(c1), peer(c2), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(2, 'map')), sync(0, 2), sync(2, 1),
+      tx(1, 'b', nset(0, 'a', 1), nset(0, 'b', 1)), sync(1, 2), tx(0, 'b', del('t', 2, 1)), sync(0, 2)],
+  }
+}
+
 export function suite(scenarios) {
   return { meta: { yjsVersion: YJS_VERSION, format: 'v1', generatedBy: 'undo-fuzz.mjs' }, scenarios }
 }
@@ -940,8 +989,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (process.argv.includes('--suite')) {
     // The committed regression corpus. Minimised repros and the audit scenarios first, one per
     // undo/redo divergence of YSwift 0.4.0 (see REPROS and AUDIT above), then the merged map entry
-    // scenarios (MERGED_ENTRY), then seeded scenarios.
-    for (const [name, spec] of [...Object.entries(REPROS), ...Object.entries(AUDIT), ...Object.entries(MERGED_ENTRY)]) {
+    // scenarios (MERGED_ENTRY), then the transaction cleanup scenarios (CLEANUP), then seeded scenarios.
+    const named = [...Object.entries(REPROS), ...Object.entries(AUDIT), ...Object.entries(MERGED_ENTRY),
+      ...Object.entries(CLEANUP)]
+    for (const [name, spec] of named) {
       const config = { seed: 0, docs: spec.docs, roots: spec.roots, ums: spec.ums, ...(spec.nodelta ? { nodelta: true } : {}) }
       scenarios.push(record(name, config, spec.steps))
     }

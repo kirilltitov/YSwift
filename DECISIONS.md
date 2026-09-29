@@ -61,8 +61,15 @@ remains the frozen contract established during the migration to native Swift.
 - **A document with `gc` collects the deleted items of the transaction's delete
   set** that no `UndoManager` protects (`keep`), as yjs `tryGcDeleteSet` does; a
   collected embedded type turns its children into GC structs. An item deleted
-  under protection stays uncollected if the protection is lifted later. Merging
-  still runs over every client.
+  under protection stays uncollected if the protection is lifted later.
+- **The cleanup merges what the transaction touched, in yjs order.** All
+  clients are collected first, then structs are merged around each delete
+  range, over the structs the transaction added, and around the structs yjs
+  records in `_mergeStructs` (the right half of every split and each child a
+  deleted type had lost earlier), as `cleanupTransactions` does. Merging
+  within a client does not depend on the others, so the encoded state no longer
+  depends on the hash order of clients, which differed from process to
+  process. Pinned by the `cleanup_*` undo fuzz scenarios.
 - **A fresh tracked edit lifts the redo stack's protection**, as yjs
   `clear(false, true)` does when it drops a non-empty redo stack: its deleted
   items in scope and their parent items lose `keep` before the edit's own

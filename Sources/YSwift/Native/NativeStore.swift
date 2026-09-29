@@ -14,6 +14,11 @@ final class NativeStore {
     /// on commit, as yjs does through `transaction._mergeStructs`.
     private(set) var splitCount = 0
 
+    /// Yjs `transaction._mergeStructs`: ids the cleanup merges around besides the delete set and the
+    /// structs the transaction added — the right half of every split, and every child a deleted type
+    /// had lost in an earlier transaction (`ContentType.delete`).
+    var mergeStructs: [YID] = []
+
     deinit {
         // A type also owns the current value of each of its keys (`YTypeImpl.map`), so a chain of
         // nested map entries would be released recursively, one stack frame per level, and a deep
@@ -48,6 +53,7 @@ final class NativeStore {
         (left.right as? Item)?.left = right
         left.right = right
         left.length = UInt64(diff)
+        self.mergeStructs.append(right.id)
         if let parentSub = right.parentSub, right.right == nil {
             right.parent?.map[parentSub] = right
         }
@@ -121,7 +127,14 @@ final class NativeStore {
         // order without a stack frame per level of nesting.
         var pending: [(item: Item, depth: Int)] = [(item, 1)]
         while let (item, depth) = pending.popLast() {
-            guard !item.deleted else { continue }
+            guard !item.deleted else {
+                // `ContentType.delete`: a child deleted before this transaction is in no delete set of
+                // it, yet it is collected with the type; queue it so the cleanup merges it.
+                if depth > 1, item.id.clock < self.transactionBeforeState[item.id.client] ?? 0 {
+                    self.mergeStructs.append(item.id)
+                }
+                continue
+            }
             if self.limitsDeletionDepth, depth > self.nestingLimit { self.remoteDeletionFailed = true }
             if item.countable, item.parentSub == nil {
                 item.parent?.length -= Int(item.length)
@@ -253,19 +266,60 @@ final class NativeStore {
         return state
     }
 
-    /// Transaction cleanup: replaces the content of the transaction's deleted items with
-    /// `ContentDeleted` (GC with `parentGCd == false`) and merges adjacent compatible structs. Ports
-    /// the `tryGcDeleteSet` + per-client `tryToMergeWithLefts` cleanup. Merging runs over every
-    /// client, which is safe because already-merged runs are left untouched.
+    /// Yjs `cleanupTransactions`: collects the transaction's delete set in every client first
+    /// (`tryGcDeleteSet`), then merges only what the transaction touched: around each delete range
+    /// (`tryMergeDeleteSet`), the structs it added, and around `mergeStructs`, in reverse. Merges within a
+    /// client do not depend on other clients, so the client order does not change the result.
     func cleanup(gc: Bool, deletes: [(client: UInt64, clock: UInt64, length: UInt64)]) {
-        var ranges: [UInt64: [(clock: UInt64, length: UInt64)]] = [:]
+        var deleteSet: [UInt64: [(clock: UInt64, length: UInt64)]] = [:]
+        var deleteClients: [UInt64] = []
+        for delete in deletes {
+            if deleteSet[delete.client] == nil { deleteClients.append(delete.client) }
+            deleteSet[delete.client, default: []].append((delete.clock, delete.length))
+        }
+        // `sortAndMergeDeleteSet`
+        for client in deleteClients {
+            var merged: [(clock: UInt64, length: UInt64)] = []
+            for range in deleteSet[client]!.sorted(by: { $0.clock < $1.clock }) {
+                if let last = merged.last, last.clock + last.length >= range.clock {
+                    merged[merged.count - 1].length = max(last.length, range.clock + range.length - last.clock)
+                } else {
+                    merged.append(range)
+                }
+            }
+            deleteSet[client] = merged
+        }
         if gc {
-            for delete in deletes { ranges[delete.client, default: []].append((delete.clock, delete.length)) }
+            for client in deleteClients { self.garbageCollect(client, deleteSet[client]!) }
         }
-        for client in self.clients.keys {
-            if let ranges = ranges[client] { self.garbageCollect(client, ranges) }
-            self.mergeClient(client)
+        for client in deleteClients {
+            for range in deleteSet[client]!.reversed() {
+                let last = self.findIndex(self.clients[client]!, range.clock + range.length - 1)
+                var index = min(self.clients[client]!.count - 1, last + 1)
+                while index > 0, self.clients[client]![index].id.clock >= range.clock {
+                    index -= 1 + self.tryToMergeWithLefts(&self.clients[client]!, index)
+                }
+            }
         }
+        for client in self.clientOrder {
+            let before = self.transactionBeforeState[client] ?? 0
+            guard self.getState(client) != before else { continue }
+            let first = max(self.findIndex(self.clients[client]!, before), 1)
+            var index = self.clients[client]!.count - 1
+            while index >= first {
+                index -= 1 + self.tryToMergeWithLefts(&self.clients[client]!, index)
+            }
+        }
+        for id in self.mergeStructs.reversed() {
+            let position = self.findIndex(self.clients[id.client]!, id.clock)
+            if position + 1 < self.clients[id.client]!.count,
+                self.tryToMergeWithLefts(&self.clients[id.client]!, position + 1) > 1
+            {
+                continue
+            }
+            if position > 0 { _ = self.tryToMergeWithLefts(&self.clients[id.client]!, position) }
+        }
+        self.mergeStructs = []
     }
 
     /// Collects the unprotected items the transaction deleted, and only those: an item deleted
@@ -401,15 +455,6 @@ final class NativeStore {
             guard !walking.contains(ObjectIdentifier(nested)), enter(nested) else { return true }
         }
         return false
-    }
-
-    private func mergeClient(_ client: UInt64) {
-        guard var structs = clients[client], structs.count > 1 else { return }
-        var index = structs.count - 1
-        while index >= 1 {
-            index -= 1 + self.tryToMergeWithLefts(&structs, index)
-        }
-        clients[client] = structs
     }
 
     /// Merges `structs[pos]` leftward into contiguous compatible structs, removing

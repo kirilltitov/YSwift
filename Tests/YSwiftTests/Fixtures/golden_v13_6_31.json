@@ -1482,6 +1482,20 @@
       "update": "AgEGAAQBB2NvbnRlbnQBegMFAAcBB2NvbnRlbnQABAAFAAJ4eYQFAgFiAQUBAAM="
     },
     {
+      "name": "collected_map_keeps_live_split_half_until_the_same_transaction",
+      "description": "a map deleted after the right half of its value, the left half deleted in the same transaction",
+      "updates": [
+        "AQIFAAcBB2NvbnRlbnQBKAAFAAFrAn0BfQIA",
+        "AAEFAQIB",
+        "AAEFAQAB",
+        "AAEFAQEB"
+      ],
+      "yswiftRejects": 2,
+      "together": 2,
+      "rejected": null,
+      "update": "AQIFAAEBB2NvbnRlbnQBAAIBBQEAAw=="
+    },
+    {
       "name": "resent_run_under_another_parent",
       "description": "lists nested through runs of the root resent after the list before",
       "updates": [

@@ -107,7 +107,15 @@ remains the frozen contract established during the migration to native Swift.
   `gc` nothing is collected and the update is accepted, as in yjs. The check
   runs before commit, so it does not see the protection an `UndoManager`
   tracking the update gives its deletions only then: with such a manager
-  YSwift rejects an update yjs accepts and never collects. Every walk over
+  YSwift rejects an update yjs accepts and never collects. The check also runs
+  after each update, while yjs collects once per transaction: of several
+  updates applied in one transaction, YSwift rejects the first after which
+  collection would fail, even where a later one deletes the live item and yjs
+  accepts the whole transaction. Every update must be acceptable on its own,
+  so that it is rejected before later ones build on it; only malformed input
+  (a live item under a deleted type, or a chain that leads back into itself)
+  gets there. Pinned by the
+  `collected_map_keeps_live_split_half_until_the_same_transaction` vector. Every walk over
   such chains (collect, delete, `UndoManager` redo) stops at the first item it
   reaches twice. Undo and redo have no error to report: an item whose chains
   lead back into themselves is not redone, where yjs loops without end. Pinned

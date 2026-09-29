@@ -614,9 +614,12 @@ const threadedLists = (depth) => {
  *  deeper than browsers can delete, which yjs accepts: `yswiftRejects` is the index of the update it
  *  rejects on purpose, and `unlimited` replays with that limit lifted, for the deep documents that
  *  check how YSwift handles depth. With `keepGoing`, the document takes the updates after a rejected
- *  one too: `rejectedAll` lists every rejected index. */
-function malformedFixture(name, description, updates,
-  { tracked = null, xml = false, gc = true, yswiftRejects = null, unlimited = false, keepGoing = false } = {}) {
+ *  one too: `rejectedAll` lists every rejected index. With `together`, the updates from that index on
+ *  are applied in one transaction; `rejected` is then the one applied when yjs threw, the last if the
+ *  commit threw. */
+function malformedFixture(name, description, updates, {
+  tracked = null, xml = false, gc = true, yswiftRejects = null, unlimited = false, keepGoing = false, together = null,
+} = {}) {
   const doc = new Y.Doc({ gc })
   doc.clientID = 999
   const um = tracked === null
@@ -625,6 +628,7 @@ function malformedFixture(name, description, updates,
   let rejected = null
   const rejectedAll = []
   for (const [index, update] of updates.entries()) {
+    if (together !== null && index >= together) break
     try {
       Y.applyUpdate(doc, Buffer.from(update, 'base64'), um !== null && index >= tracked ? 'r' : null)
     } catch {
@@ -634,6 +638,16 @@ function malformedFixture(name, description, updates,
       break
     }
   }
+  if (together !== null && rejected === null) {
+    let index = together
+    try {
+      doc.transact(() => {
+        for (; index < updates.length; index++) Y.applyUpdate(doc, Buffer.from(updates[index], 'base64'))
+      })
+    } catch {
+      rejected = Math.min(index, updates.length - 1)
+    }
+  }
   if (um !== null && rejected === null) {
     um.undo()
     um.redo()
@@ -641,7 +655,7 @@ function malformedFixture(name, description, updates,
   return {
     name, description, updates, ...(tracked === null ? {} : { tracked }), ...(gc ? {} : { gc }),
     ...(yswiftRejects === null ? {} : { yswiftRejects }), ...(unlimited ? { unlimited } : {}),
-    ...(keepGoing ? { keepGoing, rejectedAll } : {}),
+    ...(keepGoing ? { keepGoing, rejectedAll } : {}), ...(together === null ? {} : { together }),
     rejected, update: rejected === null ? b64(Y.encodeStateAsUpdate(doc)) : null,
     ...(xml && rejected === null ? { xml: doc.getXmlFragment(KEY).toString() } : {}),
   }
@@ -709,6 +723,13 @@ const malformed = [
         rawUpdate(5, 0, [rootListType(), stringIn(5, 0, 'xy')]), rawUpdate(5, 2, [stringAfter(6, 0, 'ab')]),
         rawUpdateDeleting(6, 0, [rootString('z')], 5, [[0, 1]])], { gc, ...(gc ? {} : { yswiftRejects: 2 }) }),
   ]),
+  // Yjs collects once, when the transaction ends, so a later update of the same transaction can delete the
+  // live half first; YSwift checks after each update whether its collection would fail, to reject that
+  // update, and rejects the first one even though the transaction as a whole collects.
+  malformedFixture('collected_map_keeps_live_split_half_until_the_same_transaction',
+    'a map deleted after the right half of its value, the left half deleted in the same transaction', [
+      rawUpdate(5, 0, [rootMapType(), numbersIn(5, 0, 'k', 2)]), deleteRanges(5, [[2, 1]]),
+      deleteRanges(5, [[0, 1]]), deleteRanges(5, [[1, 1]])], { together: 2, yswiftRejects: 2 }),
   // A run resent from its middle whose earlier part lies under another parent or key: valid updates never
   // carry one, as the part already held is the same struct. Yjs links it into that part's list anyway while
   // it counts it in its own parent, so the lists no longer match the parents: a type whose parent is the

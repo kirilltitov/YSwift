@@ -292,7 +292,7 @@ final class NativeDoc {
         let parsed = try UpdateCodec.readUpdate(bytes)
         let refs = self.buildClientRefs(parsed.clientBlocks)
         // Where yjs runs out of stack deleting nested types, the update is rejected, as it is there
-        // once partly applied.
+        // once partly applied, and so is nesting deeper than browsers can delete.
         self.store.limitsDeletionDepth = true
         self.store.remoteDeletionFailed = false
         defer { self.store.limitsDeletionDepth = false }
@@ -440,6 +440,10 @@ final class NativeDoc {
                     if offset > 0, let item = head as? Item, item.parent != nil,
                         !(self.store.getItem(YID(client: item.id.client, clock: localClock - 1)) is Item)
                     {
+                        throw YError.invalidUpdate
+                    }
+                    // Nesting that browsers could not delete is not built at all.
+                    if let parent = (head as? Item)?.parent, parent.depth >= self.store.nestingLimit {
                         throw YError.invalidUpdate
                     }
                     head.integrate(self.store, offset: offset)

@@ -98,14 +98,18 @@ final class NativeStore {
         }
     }
 
-    /// How many levels of nested types a deletion made by a remote update may reach. Yjs deletes a
-    /// type's children recursively and throws once the stack runs out, a few thousand levels down;
-    /// such an update is rejected here too (see DECISIONS.md), past a fixed depth.
-    static let remoteDeletionDepthLimit = 4096
+    /// How many levels of nested content a remote update may build or delete. Yjs deletes and collects
+    /// a type's children recursively and throws once the stack runs out: in browsers from 734 levels
+    /// on (WebKit, in a worker). Past this depth a remote update is rejected (see DECISIONS.md), so that
+    /// whatever the document accepts, browsers can delete.
+    static let remoteNestingLimit = 512
 
-    /// Set while a remote update is applied: a deletion reaching deeper than
-    /// `remoteDeletionDepthLimit`, or a type's list that leads back into itself (yjs deletes along it
-    /// without end), then sets `remoteDeletionFailed`, for the update to be rejected.
+    /// `remoteNestingLimit` for this store. Only tests lift it, to build deeper documents.
+    var nestingLimit = NativeStore.remoteNestingLimit
+
+    /// Set while a remote update is applied: a deletion reaching deeper than `nestingLimit`, or a type's
+    /// list that leads back into itself (yjs deletes along it without end), then sets
+    /// `remoteDeletionFailed`, for the update to be rejected.
     var limitsDeletionDepth = false
     var remoteDeletionFailed = false
 
@@ -118,7 +122,7 @@ final class NativeStore {
         var pending: [(item: Item, depth: Int)] = [(item, 1)]
         while let (item, depth) = pending.popLast() {
             guard !item.deleted else { continue }
-            if self.limitsDeletionDepth, depth > Self.remoteDeletionDepthLimit { self.remoteDeletionFailed = true }
+            if self.limitsDeletionDepth, depth > self.nestingLimit { self.remoteDeletionFailed = true }
             if item.countable, item.parentSub == nil {
                 item.parent?.length -= Int(item.length)
             }

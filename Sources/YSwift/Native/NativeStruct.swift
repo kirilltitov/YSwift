@@ -451,6 +451,7 @@ final class Item: Struct {
 
         if case .type(let type, _, _) = self.content {
             type.item = self  // ContentType.integrate
+            type.depth = parent.depth + 1
         }
         if case .format = self.content {
             parent.hasFormatting = true  // disables search markers (attribute-safe)
@@ -548,6 +549,8 @@ final class YTypeImpl {
     var length: Int = 0
     weak var item: Item?
     let name: String?
+    /// How many types this one is nested in: 0 for a root.
+    var depth = 0
 
     /// Cached search marker (`findPosition` hint): `markerItem` starts at absolute
     /// index `markerIndex`, valid while `markerVersion == store.version`.

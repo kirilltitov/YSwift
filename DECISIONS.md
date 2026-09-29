@@ -103,20 +103,36 @@ remains the frozen contract established during the migration to native Swift.
   struct's right neighbour, which a GC struct lacks, before changing anything;
   YSwift used to insert the run at the start of its parent. Pinned by the
   `resent_run_after_*` malformed golden vectors.
-- **A remote deletion reaching more than 4096 levels of nested types is
-  rejected.** Yjs deletes and collects a type's children recursively and
-  throws a `RangeError` once the stack runs out: Yjs 13.6.31 on Node 26 with
-  its default stack deletes up to about 2000–2500 nested maps and 3750 nested
-  lists (11 000 without gc), the exact depth depending on the engine, its
-  stack and what is already on it. YSwift deletes, collects, re-creates
-  (UndoManager) and releases nested types without recursion, so no depth stops
-  the process, and `applyUpdateChecked` reports `invalidUpdate` once a deletion
-  goes deeper than `NativeStore.remoteDeletionDepthLimit`, where Yjs has failed
-  too; between Yjs's depth and the limit YSwift accepts what Yjs throws on. As
-  in Yjs the update has then been applied in part, and the document must be
-  discarded, as after any error. Local edits and undo/redo delete at any depth:
-  they have no error to report (Yjs `undo()` throws deep enough). Pinned by the
-  `nested_*` malformed golden vectors.
+- **A remote update may build and delete 512 levels of nested content.** Yjs
+  deletes and collects a type's children recursively and fails once the stack
+  runs out (a `RangeError`, or in WebKit an `Unexpected case` from collecting
+  the half-deleted chain), leaving the document damaged. Yjs 13.6.31 in
+  Playwright's browsers (Chromium 149.0.7827.55, WebKit 26.5) fails at these
+  depths, D nested types with the outermost deleted:
+
+  | | Chromium main | Chromium worker | WebKit main | WebKit worker |
+  |---|---|---|---|---|
+  | maps, remote delete, gc | 1854–2042 | 912 | 7312–8254 | 734 |
+  | maps, local delete, gc | 1914–2127 | 912 | 7382–8313 | 735 |
+  | lists, remote delete, gc | 4188–8407 | 1733–1809 | 8870–15408 | 1557 |
+  | lists, local delete, gc | 4125–8410 | 1798–1856 | 8750–15263 | 1559 |
+  | applying the chain | no failure up to 256 000 | same | same | same |
+
+  (ranges span cold and warm pages, minified and plain bundles and repeats;
+  without gc the numbers are about the same; Node 26 fails at about 2200 maps
+  and 3750 lists). Whatever YSwift accepts, browsers must be able to apply,
+  collect and delete, so `applyUpdateChecked` rejects an update that nests
+  an item deeper than `NativeStore.remoteNestingLimit` = 512 levels (about 30 %
+  below the smallest failing depth, 734 in a WebKit worker, whose stack stands
+  for the smaller stacks of mobile browsers) or deletes deeper than that. Yjs
+  itself applies any depth, so YSwift rejects updates of 513 to about 2000
+  levels that yjs accepts; this is deliberate. As in yjs, a rejected update has
+  been applied in part, and the document must be discarded, as after any
+  error. YSwift deletes, collects, re-creates (UndoManager) and releases nested
+  types without recursion, so local edits and undo/redo, which have no error to
+  report, work at any depth. Pinned by the `nested_*` malformed golden vectors
+  (512 levels accepted and deleted, 513 rejected) and
+  `CheckedUpdateTests+Depth`.
 
 - **Deep nesting is rendered, not refused.** Yjs renders XML elements
   recursively and throws from about 1172 nested levels; `YXmlFragment.toString`

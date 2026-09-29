@@ -597,8 +597,12 @@ const nestedChain = (client, depth, map) => rawUpdate(client, 0, Array.from({ le
 
 /** With `tracked`, an UndoManager on the root tracks the updates from that index on (origin `r`) and,
  *  once all are applied, undoes and redoes the last of them. With `xml`, the root's XML string is
- *  recorded too. `gc: false` replays into a document that keeps deleted content. */
-function malformedFixture(name, description, updates, { tracked = null, xml = false, gc = true } = {}) {
+ *  recorded too. `gc: false` replays into a document that keeps deleted content. YSwift rejects nesting
+ *  deeper than browsers can delete, which yjs accepts: `yswiftRejects` is the index of the update it
+ *  rejects on purpose, and `unlimited` replays with that limit lifted, for the deep documents that
+ *  check how YSwift handles depth. */
+function malformedFixture(name, description, updates,
+  { tracked = null, xml = false, gc = true, yswiftRejects = null, unlimited = false } = {}) {
   const doc = new Y.Doc({ gc })
   doc.clientID = 999
   const um = tracked === null
@@ -619,6 +623,7 @@ function malformedFixture(name, description, updates, { tracked = null, xml = fa
   }
   return {
     name, description, updates, ...(tracked === null ? {} : { tracked }), ...(gc ? {} : { gc }),
+    ...(yswiftRejects === null ? {} : { yswiftRejects }), ...(unlimited ? { unlimited } : {}),
     rejected, update: rejected === null ? b64(Y.encodeStateAsUpdate(doc)) : null,
     ...(xml && rejected === null ? { xml: doc.getXmlFragment(KEY).toString() } : {}),
   }
@@ -686,31 +691,35 @@ const malformed = [
         rawUpdate(5, 0, [rootListType(), stringIn(5, 0, 'xy')]), rawUpdate(5, 2, [stringAfter(6, 0, 'ab')]),
         rawUpdateDeleting(6, 0, [rootString('z')], 5, [[0, 1]])], { gc }),
   ]),
-  // Size and depth: yjs accepts these; the document must survive them, and being dropped.
+  // Size and depth: yjs accepts these; the document must survive them, and being dropped. The deep ones
+  // are replayed with YSwift's nesting limit lifted.
   // Yjs renders nested elements recursively and throws from 1172 levels on; YSwift renders any depth.
   malformedFixture('nested_elements', '1000 XML elements, each a child of the one before', [nestedElements(1000)],
-    { xml: true }),
+    { xml: true, unlimited: true }),
   malformedFixture('huge_number_in_text', 'an any value 1e300 in the text, which observers render',
     [rawUpdate(5, 0, [rootAnyNumber(1e300)])]),
   malformedFixture('infinity_in_text', 'an any value -Infinity in the text, which observers render',
     [rawUpdate(5, 0, [rootAnyNumber(-Infinity)])]),
-  malformedFixture('nested_map_chain', '2000 maps, each an entry of the one before', [nestedChain(5, 2000, true)]),
-  // Yjs deletes (and collects) a nested type recursively. On Node's default stack it deletes 3750 nested
-  // lists and 2187 nested maps, and throws a RangeError from a few more; YSwift rejects past 4096.
-  malformedFixture('nested_list_chain_deleted', '3000 nested lists, the outermost deleted', [
-    nestedChain(5, 3000, false), deleteRanges(5, [[0, 1]])]),
-  malformedFixture('nested_map_chain_deleted', '1000 nested maps, the outermost deleted', [
-    nestedChain(5, 1000, true), deleteRanges(5, [[0, 1]])]),
-  malformedFixture('nested_list_chain_deleted_too_deep', '5000 nested lists, the outermost deleted', [
-    nestedChain(5, 5000, false), deleteRanges(5, [[0, 1]])]),
-  malformedFixture('nested_map_chain_deleted_too_deep', '5000 nested maps, the outermost deleted', [
-    nestedChain(5, 5000, true), deleteRanges(5, [[0, 1]])]),
+  malformedFixture('nested_map_chain', '2000 maps, each an entry of the one before', [nestedChain(5, 2000, true)],
+    { unlimited: true }),
+  // Yjs deletes (and collects) a nested type recursively and throws a RangeError once the stack runs
+  // out: in browsers from 734 levels on (WebKit, in a worker), on Node's default stack from about 2200
+  // maps or 3750 lists. YSwift accepts 512 levels, the deletion included, and rejects a 513th, which
+  // yjs accepts.
+  malformedFixture('nested_list_chain_deleted', '512 nested lists, the outermost deleted', [
+    nestedChain(5, 512, false), deleteRanges(5, [[0, 1]])]),
+  malformedFixture('nested_map_chain_deleted', '512 nested maps, the outermost deleted', [
+    nestedChain(5, 512, true), deleteRanges(5, [[0, 1]])]),
+  malformedFixture('nested_map_chain_replaced', '512 nested maps, the outermost replaced', [
+    nestedChain(5, 512, true), rootEntry(6)]),
+  malformedFixture('nested_list_chain_past_the_limit', '513 nested lists', [nestedChain(5, 513, false)],
+    { yswiftRejects: 0 }),
+  malformedFixture('nested_map_chain_past_the_limit', '513 nested maps', [nestedChain(5, 513, true)],
+    { yswiftRejects: 0 }),
   malformedFixture('nested_lists_redone_innermost_first', '2000 nested lists deleted innermost first, undone, redone',
-    nestedAcrossClients(2000), { tracked: 1 }),
+    nestedAcrossClients(2000), { tracked: 1, unlimited: true }),
   malformedFixture('deep_scope_undone', '4000 units deleted 2000 lists deep in the scope, undone, redone',
-    deepScope(2000, 4000), { tracked: 1 }),
-  malformedFixture('nested_map_chain_replaced_too_deep', '5000 nested maps, the outermost replaced', [
-    nestedChain(5, 5000, true), rootEntry(6)]),
+    deepScope(2000, 4000), { tracked: 1, unlimited: true }),
   malformedFixture('surrogate_pairs_split', 'deletes splitting surrogate pairs near either end of a string', [
     rawUpdate(5, 0, [rootString('\u{1F600}'.repeat(4))]), deleteRanges(5, [[1, 1], [6, 1]])]),
   malformedFixture('long_string_split_by_deletes', 'a 40 000-unit string split by 4000 deleted ranges', [

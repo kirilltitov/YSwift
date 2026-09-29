@@ -143,6 +143,8 @@ struct CheckedUpdateTests {
             let tracked: Int?
             let gc: Bool?
             let rejected: Int?
+            let yswiftRejects: Int?
+            let unlimited: Bool?
             let update: String?
             let xml: String?
         }
@@ -158,9 +160,11 @@ struct CheckedUpdateTests {
 
     /// Applies the updates to a fresh document one per transaction, as the fixture generator does, and
     /// drops the document before returning. With `tracked`, an UndoManager on the root tracks the updates
-    /// from that index on and, once all are applied, undoes and redoes the last of them.
-    static func replay(_ updates: [Data], tracked: Int? = nil, gc: Bool = true) -> Replay {
+    /// from that index on and, once all are applied, undoes and redoes the last of them. `unlimited`
+    /// lifts the limit on nesting depth, to build deeper documents than remote updates may.
+    static func replay(_ updates: [Data], tracked: Int? = nil, gc: Bool = true, unlimited: Bool = false) -> Replay {
         let target = YDoc(clientID: 999, gc: gc)
+        if unlimited { (target.engine as? NativeEngine)?.doc.store.nestingLimit = .max }
         let origin = Origin("r")
         let undoManager = tracked.map { _ in
             UndoManager(target.text("content"), trackedOrigins: [origin], captureTimeout: .zero)
@@ -226,15 +230,18 @@ struct CheckedUpdateTests {
             let updates = try fixture.updates.map { try #require(Data(base64Encoded: $0)) }
             let tracked = fixture.tracked
             let gc = fixture.gc ?? true
-            let replay = Self.onWorkerSizedStack(fixture.name) { Self.replay(updates, tracked: tracked, gc: gc) }
-            #expect(replay.rejected == fixture.rejected, "\(fixture.name): rejected update")
+            let unlimited = fixture.unlimited ?? false
+            let replay = Self.onWorkerSizedStack(fixture.name) {
+                Self.replay(updates, tracked: tracked, gc: gc, unlimited: unlimited)
+            }
+            #expect(replay.rejected == fixture.yswiftRejects ?? fixture.rejected, "\(fixture.name): rejected update")
             if replay.rejected != nil {
                 #expect(replay.error == .invalidUpdate, "\(fixture.name)")
             }
             if let xml = fixture.xml {
                 #expect(replay.xml == xml, "\(fixture.name): xml")
             }
-            if let update = fixture.update {
+            if let update = fixture.update, fixture.yswiftRejects == nil {
                 #expect(replay.state == update, "\(fixture.name): state")
             }
         }
@@ -294,7 +301,7 @@ struct CheckedUpdateTests {
             bytes += [3] + Self.varString("p")
         }
         let update = Data(bytes + [0])
-        let replay = Self.onWorkerSizedStack { Self.replay([update]) }
+        let replay = Self.onWorkerSizedStack { Self.replay([update], unlimited: true) }
         #expect(replay.rejected == nil)
         #expect(replay.xml == String(repeating: "<p>", count: depth) + String(repeating: "</p>", count: depth))
     }
@@ -303,7 +310,7 @@ struct CheckedUpdateTests {
     func undoesDeepInsideTheScopeInLinearTime() throws {
         let fixture = try #require(try Self.malformedFixtures().first { $0.name == "deep_scope_undone" })
         let updates = try fixture.updates.map { try #require(Data(base64Encoded: $0)) }
-        let elapsed = ContinuousClock().measure { _ = Self.replay(updates, tracked: fixture.tracked) }
+        let elapsed = ContinuousClock().measure { _ = Self.replay(updates, tracked: fixture.tracked, unlimited: true) }
         // When every item's scope check climbed the 2000 levels on its own, this took seconds.
         #expect(elapsed < .seconds(1), "\(elapsed)")
     }
@@ -444,12 +451,12 @@ struct CheckedUpdateTests {
         return Data(bytes)
     }
 
-    private static func varString(_ value: String) -> [UInt8] {
+    static func varString(_ value: String) -> [UInt8] {
         let utf8 = Array(value.utf8)
         return Self.varUint(UInt64(utf8.count)) + utf8
     }
 
-    private static func varUint(_ value: UInt64) -> [UInt8] {
+    static func varUint(_ value: UInt64) -> [UInt8] {
         var value = value
         var bytes: [UInt8] = []
         repeat {

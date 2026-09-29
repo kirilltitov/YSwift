@@ -538,6 +538,20 @@ const stringAfter = (client, clock, text) => [0x84, ...varUint(client), ...varUi
 const stringBefore = (client, clock, text) => [0x44, ...varUint(client), ...varUint(clock), ...varString(text)]
 const embedAfter = (client, clock, json) => [0x85, ...varUint(client), ...varUint(clock), ...varString(json)]
 const mapEntryIn = (client, clock, key) => [0x28, 0, ...varUint(client), ...varUint(clock), ...varString(key), 1, 125, 1]
+const rootListType = () => [0x07, 1, ...varString(KEY), 0]
+const gcStruct = (length) => [0x00, ...varUint(length)]
+/** A string, the first element of the list type at `clock` of `client`. */
+const stringIn = (client, clock, text) => [0x04, 0, ...varUint(client), ...varUint(clock), ...varString(text)]
+/** `count` numbers 1, 2, … as entry `key` of the map type at `clock` of `client`. */
+const numbersIn = (client, clock, key, count) =>
+  [0x28, 0, ...varUint(client), ...varUint(clock), ...varString(key), count, ...range(count, (i) => [125, i + 1]).flat()]
+/** A number `value` right after the item at `clock` of `client`. */
+const numberAfter = (client, clock, value) => [0x88, ...varUint(client), ...varUint(clock), 1, 125, value]
+/** One client's structs from `clock` on, and a delete set of `ranges` of `deleted`. */
+const rawUpdateDeleting = (client, clock, structs, deleted, ranges) => b64(new Uint8Array([
+  1, ...varUint(structs.length), ...varUint(client), ...varUint(clock), ...structs.flat(), 1, ...varUint(deleted),
+  ...varUint(ranges.length), ...ranges.flatMap(([at, length]) => [...varUint(at), ...varUint(length)]),
+]))
 /** Deleted content of `length` clocks, an entry `key` of the type at `parent` (a client and a clock). */
 const deletedEntryIn = (client, clock, key, length) =>
   [0x21, 0, ...varUint(client), ...varUint(clock), ...varString(key), ...varUint(length)]
@@ -646,6 +660,32 @@ const malformed = [
     rawUpdate(5, 0, [rootMapType()]), rawUpdate(5, 0, [deletedEntryIn(5, 0, 'l', 2)])]),
   malformedFixture('entry_resent_after_its_map_kept', 'the same without gc', [
     rawUpdate(5, 0, [rootMapType()]), rawUpdate(5, 0, [deletedEntryIn(5, 0, 'l', 2)])], { gc: false }),
+  // A run resent from its middle is linked in after the struct before its first new clock. Yjs reads that
+  // struct's right neighbour, which a GC struct does not have, and throws before changing anything.
+  ...[true, false].map((gc) => malformedFixture(`resent_run_after_wire_gc${gc ? '' : '_without_gc'}`,
+    'a run resent from its middle, after a GC struct sent as such', [
+      rawUpdate(5, 0, [gcStruct(2)]), rawUpdate(5, 1, [rootString('ab')])], { gc })),
+  ...[true, false].map((gc) => malformedFixture(`resent_run_after_collected_child${gc ? '' : '_without_gc'}`,
+    'the same after a child the document collected with its list (kept without gc)', [
+      rawUpdate(5, 0, [rootListType(), stringIn(5, 0, 'xy')]), deleteRanges(5, [[0, 1]]),
+      rawUpdate(5, 2, [rootString('abc')])], { gc })),
+  // Yjs deletes only a map's current value with the map, yet collects the whole key chain, and throws on
+  // an item there that is not deleted: here the left half of a split value, and an item of another
+  // type linked into a list by a resent run. Without gc nothing is collected and yjs accepts them.
+  ...[true, false].flatMap((gc) => [
+    malformedFixture(`collected_map_keeps_live_split_half${gc ? '' : '_without_gc'}`,
+      'a map deleted after the right half of its value', [
+        rawUpdate(5, 0, [rootMapType(), numbersIn(5, 0, 'k', 2)]), deleteRanges(5, [[2, 1]]),
+        deleteRanges(5, [[0, 1]])], { gc }),
+    malformedFixture(`collected_map_keeps_half_split_by_insert${gc ? '' : '_without_gc'}`,
+      'a map deleted after an item split its value', [
+        rawUpdate(5, 0, [rootMapType(), numbersIn(5, 0, 'k', 2)]),
+        rawUpdateDeleting(6, 0, [numberAfter(5, 1, 3)], 5, [[0, 1]])], { gc }),
+    malformedFixture(`collected_list_reaches_foreign_item${gc ? '' : '_without_gc'}`,
+      'a list deleted with an item of the root linked into it', [
+        rawUpdate(5, 0, [rootListType(), stringIn(5, 0, 'xy')]), rawUpdate(5, 2, [stringAfter(6, 0, 'ab')]),
+        rawUpdateDeleting(6, 0, [rootString('z')], 5, [[0, 1]])], { gc }),
+  ]),
   // Size and depth: yjs accepts these; the document must survive them, and being dropped.
   // Yjs renders nested elements recursively and throws from 1172 levels on; YSwift renders any depth.
   malformedFixture('nested_elements', '1000 XML elements, each a child of the one before', [nestedElements(1000)],

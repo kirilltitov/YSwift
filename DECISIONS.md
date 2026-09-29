@@ -84,8 +84,11 @@ remains the frozen contract established during the migration to native Swift.
   yjs as here, so a malformed update can thread one list or key chain into
   another until it leads back into itself. Yjs collects a deleted type's
   children recursively when the transaction ends, and there loops without end
-  or overflows its stack. With `gc`, `applyUpdateChecked` rejects an update
-  after which collecting the transaction's deletions would do so; without
+  or overflows its stack. It also throws on a child that is not deleted, which
+  needs no cycle: a type's deletion deletes only the current value of each key,
+  yet its collection walks the whole key chain, where the left half of a split
+  value may live on. With `gc`, `applyUpdateChecked` rejects an update after
+  which collecting the transaction's deletions would fail; without
   `gc` nothing is collected and the update is accepted, as in yjs. The check
   runs before commit, so it does not see the protection an `UndoManager`
   tracking the update gives its deletions only then: with such a manager
@@ -93,8 +96,13 @@ remains the frozen contract established during the migration to native Swift.
   such chains (collect, delete, `UndoManager` redo) stops at the first item it
   reaches twice. Undo and redo have no error to report: an item whose chains
   lead back into themselves is not redone, where yjs loops without end. Pinned
-  by the `entry_resent_after_its_map_*` malformed golden vectors and
-  `CheckedUpdateTests+Cycles`.
+  by the `entry_resent_after_its_map_*` and `collected_*` malformed golden
+  vectors and `CheckedUpdateTests+Cycles`.
+- **A run resent from its middle after a GC struct is rejected.** Yjs links it
+  in after the struct just before its first new clock and throws reading that
+  struct's right neighbour, which a GC struct lacks, before changing anything;
+  YSwift used to insert the run at the start of its parent. Pinned by the
+  `resent_run_after_*` malformed golden vectors.
 - **A remote deletion reaching more than 4096 levels of nested types is
   rejected.** Yjs deletes and collects a type's children recursively and
   throws a `RangeError` once the stack runs out: Yjs 13.6.31 on Node 26 with

@@ -434,6 +434,14 @@ final class NativeDoc {
                     }
                     dropStack()
                 } else if offset == 0 || offset < Int(head.length) {
+                    // Yjs links a run resent from its middle in after the struct just before its first
+                    // new clock and reads that struct's right neighbour; a GC struct has none, and yjs
+                    // throws before changing anything.
+                    if offset > 0, let item = head as? Item, item.parent != nil,
+                        !(self.store.getItem(YID(client: item.id.client, clock: localClock - 1)) is Item)
+                    {
+                        throw YError.invalidUpdate
+                    }
                     head.integrate(self.store, offset: offset)
                     state[head.id.client] = head.id.clock + head.length
                 }

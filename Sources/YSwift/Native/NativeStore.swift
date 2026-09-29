@@ -330,8 +330,10 @@ final class NativeStore {
 
     /// Whether collecting the unprotected types among `deletes` fails in yjs, which collects a type's
     /// children recursively (`ContentType.gc`): a list or key chain that leads back into itself loops
-    /// there without end, and a type reached again while it is being collected recurses until the
-    /// stack runs out. Walks the types as yjs does, without changing them and without recursion.
+    /// there without end, a type reached again while it is being collected recurses until the stack
+    /// runs out, and a child that is not deleted throws (`Item.gc`). The last happens without a cycle:
+    /// yjs deletes only a key's current value with the type, but collects the whole key chain. Walks
+    /// the types as yjs does, without changing them and without recursion.
     func collectionFails(_ deletes: [(client: UInt64, clock: UInt64, length: UInt64)]) -> Bool {
         var collected = Set<ObjectIdentifier>()
         for delete in deletes {
@@ -387,9 +389,11 @@ final class NativeStore {
                 continue
             }
             walk[walk.count - 1].next += 1
-            guard case .type(let nested, _, _) = top.children[top.next].content,
-                !collected.contains(ObjectIdentifier(nested))
-            else { continue }
+            let child = top.children[top.next]
+            guard child.deleted else { return true }
+            guard case .type(let nested, _, _) = child.content, !collected.contains(ObjectIdentifier(nested)) else {
+                continue
+            }
             guard !walking.contains(ObjectIdentifier(nested)), enter(nested) else { return true }
         }
         return false

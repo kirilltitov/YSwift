@@ -1368,6 +1368,117 @@
       "update": "AQIFAAcBB2NvbnRlbnQBoQUAAQEFAQAC"
     },
     {
+      "name": "resent_run_after_wire_gc",
+      "description": "a run resent from its middle, after a GC struct sent as such",
+      "updates": [
+        "AQEFAAACAA==",
+        "AQEFAQQBB2NvbnRlbnQCYWIA"
+      ],
+      "rejected": 1,
+      "update": null
+    },
+    {
+      "name": "resent_run_after_wire_gc_without_gc",
+      "description": "a run resent from its middle, after a GC struct sent as such",
+      "updates": [
+        "AQEFAAACAA==",
+        "AQEFAQQBB2NvbnRlbnQCYWIA"
+      ],
+      "gc": false,
+      "rejected": 1,
+      "update": null
+    },
+    {
+      "name": "resent_run_after_collected_child",
+      "description": "the same after a child the document collected with its list (kept without gc)",
+      "updates": [
+        "AQIFAAcBB2NvbnRlbnQABAAFAAJ4eQA=",
+        "AAEFAQAB",
+        "AQEFAgQBB2NvbnRlbnQDYWJjAA=="
+      ],
+      "rejected": 2,
+      "update": null
+    },
+    {
+      "name": "resent_run_after_collected_child_without_gc",
+      "description": "the same after a child the document collected with its list (kept without gc)",
+      "updates": [
+        "AQIFAAcBB2NvbnRlbnQABAAFAAJ4eQA=",
+        "AAEFAQAB",
+        "AQEFAgQBB2NvbnRlbnQDYWJjAA=="
+      ],
+      "gc": false,
+      "rejected": null,
+      "update": "AQMFAAcBB2NvbnRlbnQABAAFAAJ4eYQFAgJiYwEFAQAD"
+    },
+    {
+      "name": "collected_map_keeps_live_split_half",
+      "description": "a map deleted after the right half of its value",
+      "updates": [
+        "AQIFAAcBB2NvbnRlbnQBKAAFAAFrAn0BfQIA",
+        "AAEFAQIB",
+        "AAEFAQAB"
+      ],
+      "rejected": 2,
+      "update": null
+    },
+    {
+      "name": "collected_map_keeps_half_split_by_insert",
+      "description": "a map deleted after an item split its value",
+      "updates": [
+        "AQIFAAcBB2NvbnRlbnQBKAAFAAFrAn0BfQIA",
+        "AQEGAIgFAQF9AwEFAQAB"
+      ],
+      "rejected": 1,
+      "update": null
+    },
+    {
+      "name": "collected_list_reaches_foreign_item",
+      "description": "a list deleted with an item of the root linked into it",
+      "updates": [
+        "AQIFAAcBB2NvbnRlbnQABAAFAAJ4eQA=",
+        "AQEFAoQGAAJhYgA=",
+        "AQEGAAQBB2NvbnRlbnQBegEFAQAB"
+      ],
+      "rejected": 2,
+      "update": null
+    },
+    {
+      "name": "collected_map_keeps_live_split_half_without_gc",
+      "description": "a map deleted after the right half of its value",
+      "updates": [
+        "AQIFAAcBB2NvbnRlbnQBKAAFAAFrAn0BfQIA",
+        "AAEFAQIB",
+        "AAEFAQAB"
+      ],
+      "gc": false,
+      "rejected": null,
+      "update": "AQMFAAcBB2NvbnRlbnQBKAAFAAFrAX0BqAUBAX0CAQUCAAECAQ=="
+    },
+    {
+      "name": "collected_map_keeps_half_split_by_insert_without_gc",
+      "description": "a map deleted after an item split its value",
+      "updates": [
+        "AQIFAAcBB2NvbnRlbnQBKAAFAAFrAn0BfQIA",
+        "AQEGAIgFAQF9AwEFAQAB"
+      ],
+      "gc": false,
+      "rejected": null,
+      "update": "AgEGAKgFAQF9AwMFAAcBB2NvbnRlbnQBKAAFAAFrAX0BqAUBAX0CAgYBAAEFAgABAgE="
+    },
+    {
+      "name": "collected_list_reaches_foreign_item_without_gc",
+      "description": "a list deleted with an item of the root linked into it",
+      "updates": [
+        "AQIFAAcBB2NvbnRlbnQABAAFAAJ4eQA=",
+        "AQEFAoQGAAJhYgA=",
+        "AQEGAAQBB2NvbnRlbnQBegEFAQAB"
+      ],
+      "gc": false,
+      "rejected": null,
+      "update": "AgEGAAQBB2NvbnRlbnQBegMFAAcBB2NvbnRlbnQABAAFAAJ4eYQFAgFiAQUBAAM="
+    },
+    {
       "name": "nested_elements",
       "description": "1000 XML elements, each a child of the one before",
       "updates": [

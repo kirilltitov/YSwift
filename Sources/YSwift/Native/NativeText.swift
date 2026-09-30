@@ -469,11 +469,11 @@ final class NativeText {
     /// The change this text underwent in one transaction, as a Quill delta
     /// (`YTextEvent.delta`): items added this transaction become inserts, items
     /// deleted this transaction become deletes, everything else is a retain.
-    /// `beforeState` is the store state before the transaction; `isDeleted` reports
+    /// `beforeState` gives a client's clock before the transaction; `isDeleted` reports
     /// whether an id was deleted during it. Trailing attribute-less retains are
     /// trimmed. (Retain-with-attribute-change deltas from re-formatting existing
     /// text are not yet derived — inserts still carry their running attributes.)
-    func changeDelta(beforeState: [UInt64: UInt64], isDeleted: (YID) -> Bool) -> [Delta] {
+    func changeDelta(beforeState: (UInt64) -> UInt64, isDeleted: (YID) -> Bool) -> [Delta] {
         var delta: [Delta] = []
         var attributes: [String: String] = [:]  // running attributes (valueJSON) for inserts
         var action: DeltaAction?
@@ -482,7 +482,7 @@ final class NativeText {
         var retain = 0
         var deleteLen = 0
 
-        func adds(_ item: Item) -> Bool { item.id.clock >= (beforeState[item.id.client] ?? 0) }
+        func adds(_ item: Item) -> Bool { item.id.clock >= beforeState(item.id.client) }
 
         func insertAttributes() -> Attributes? {
             guard !attributes.isEmpty else { return nil }

@@ -56,8 +56,6 @@ final class NativeDoc {
     }
 
     private var txnDepth = 0
-    private var txnBeforeState: [UInt64: UInt64] = [:]
-    private var txnStartIntegratedCount = 0
     private var txnStartSplitCount = 0
     private var txnOrigin: Origin?
     /// Whether the transaction applied an update (yjs: it is not `local`).
@@ -110,18 +108,16 @@ final class NativeDoc {
     }
 
     /// Opens (or joins) a transaction. Only the outermost `begin`/`commit` pair
-    /// snapshots state, cleans up, and emits — nested ops just join it.
+    /// resets the transaction state, cleans up, and emits — nested ops just join it.
     func beginTransaction(origin: Origin? = nil) {
         if self.txnDepth == 0 {
-            self.txnBeforeState = self.store.snapshotState()
-            self.txnStartIntegratedCount = self.store.integratedCount
             self.txnStartSplitCount = self.store.splitCount
-            self.store.deleteLog = []
+            self.store.deleteSet = DeleteSet()
             self.store.deletedItemInTransaction = false
             self.store.deletedTypeInTransaction = false
             self.store.changedTypeNames = []
             self.store.changedTypes = [:]
-            self.store.transactionBeforeState = self.txnBeforeState
+            self.store.transactionBeforeState = [:]
             self.store.changedRootNamesAreComplete = true
             self.txnOrigin = origin
             self.txnAppliedUpdate = false
@@ -136,13 +132,15 @@ final class NativeDoc {
         guard self.txnDepth > 0 else { return }
         self.txnDepth -= 1
         guard self.txnDepth == 0 else { return }
-        let deletes = self.store.deleteLog ?? []
+        // `sortAndMergeDeleteSet`, before observers and handlers see the delete set.
+        self.store.deleteSet?.sortAndMerge()
+        let deletes = self.store.deleteSet ?? DeleteSet()
         let changed = self.store.changedTypeNames ?? []
         let origin = self.txnOrigin
-        let beforeState = self.txnBeforeState
+        let changes = self.store.transactionChanges()
         // A read-only transaction (no structs added, no deletes) needs no cleanup,
-        // observer firing, or emission — skip the whole-store scan.
-        let mutated = self.store.integratedCount != self.txnStartIntegratedCount || !deletes.isEmpty
+        // observer firing, or emission.
+        let mutated = !changes.isEmpty || !deletes.isEmpty
 
         // 1. Text observers run BEFORE cleanup — merging/GC would hide which items
         //    were added this transaction (yjs fires observers, then merges).
@@ -152,8 +150,7 @@ final class NativeDoc {
         //    cleanup, so `keepItem` can protect deleted content from the GC below.
         if mutated, !self.afterTransactionHandlers.isEmpty {
             let info = TransactionInfo(
-                beforeState: beforeState, afterState: self.store.snapshotState(),
-                deletes: deletes, changedNames: changed,
+                changes: changes, deleteSet: deletes, changedNames: changed,
                 changedParentRootNames: self.store.changedParentRootNames(), origin: origin)
             for entry in self.afterTransactionHandlers { entry.handler(info) }
         }
@@ -162,32 +159,34 @@ final class NativeDoc {
         //    that only split items (e.g. an undo that found nothing to change) merges them back too,
         //    as yjs merges every transaction's `_mergeStructs`.
         if mutated || self.store.splitCount != self.txnStartSplitCount {
-            self.store.cleanup(gc: self.gc, deletes: deletes)
+            self.store.cleanup(gc: self.gc, deleteSet: deletes, changes: changes)
         }
-        self.store.deleteLog = nil
+        self.store.deleteSet = nil
         self.store.changedTypeNames = nil
         self.store.changedTypes = nil
         self.txnOrigin = nil
 
         // An applied update that advanced this document's own client shows that another peer writes under
         // its id: yjs takes a new random 32-bit one, so that later edits do not reuse that peer's clocks.
-        if self.txnAppliedUpdate, self.store.getState(self.clientID) != beforeState[self.clientID] ?? 0 {
+        if self.txnAppliedUpdate, self.store.getState(self.clientID) != self.store.beforeState(self.clientID) {
             self.clientIDStorage.store(UInt64.random(in: 0..<(1 << 32)), ordering: .relaxed)
         }
 
         // 4. Emit the incremental update to onUpdate handlers.
         let snapshot = self.handlers.withLock { $0.list }
         guard !snapshot.isEmpty else { return }
-        if let update = self.encodeTransactionUpdate(beforeState: beforeState, deletes: deletes) {
+        if let update = self.encodeTransactionUpdate(changes: changes, deletes: deletes) {
             for entry in snapshot { entry.handler(update, origin) }
         }
     }
 
     /// Post-commit transaction summary, for stateful helpers like `UndoManager`.
     struct TransactionInfo {
-        let beforeState: [UInt64: UInt64]
-        let afterState: [UInt64: UInt64]
-        let deletes: [(client: UInt64, clock: UInt64, length: UInt64)]
+        /// The clients the transaction added structs to, with their clocks before and after it, in
+        /// the store's client order.
+        let changes: [(client: UInt64, before: UInt64, after: UInt64)]
+        /// The transaction's delete set, sorted and merged.
+        let deleteSet: DeleteSet
         let changedNames: Set<String>
         /// The roots in yjs `transaction.changedParentTypes`: changed directly or through a type
         /// nested in them.
@@ -209,18 +208,14 @@ final class NativeDoc {
         self.afterTransactionHandlers.removeAll { $0.id == id }
     }
 
-    private func fireTextObservers(
-        changed: Set<String>, deletes: [(client: UInt64, clock: UInt64, length: UInt64)]
-    ) {
+    private func fireTextObservers(changed: Set<String>, deletes: DeleteSet) {
         guard !changed.isEmpty else { return }
-        func isDeleted(_ id: YID) -> Bool {
-            deletes.contains { $0.client == id.client && id.clock >= $0.clock && id.clock < $0.clock + $0.length }
-        }
+        func isDeleted(_ id: YID) -> Bool { deletes.contains(id) }
         for name in changed {
             let callbacks = self.observers.withLock { $0.byName[name] ?? [] }
             guard !callbacks.isEmpty, let type = share[name] else { continue }
             let delta = NativeText(doc: self, type: type)
-                .changeDelta(beforeState: self.txnBeforeState, isDeleted: isDeleted)
+                .changeDelta(beforeState: self.store.beforeState, isDeleted: isDeleted)
             let event = YTextEvent(delta: delta)
             for entry in callbacks { entry.callback(event) }
         }
@@ -234,49 +229,18 @@ final class NativeDoc {
         self.commitTransaction()
     }
 
-    /// Encodes the update emitted by a transaction: structs added since
-    /// `beforeState` plus the transaction's own (sorted, merged) delete set. Returns
-    /// nil when nothing changed (`writeUpdateMessageFromTransaction`).
+    /// Encodes the update emitted by a transaction: the structs it added plus its own (sorted,
+    /// merged) delete set. Returns nil when nothing changed (`writeUpdateMessageFromTransaction`).
     private func encodeTransactionUpdate(
-        beforeState: [UInt64: UInt64], deletes: [(client: UInt64, clock: UInt64, length: UInt64)]
+        changes: [(client: UInt64, before: UInt64, after: UInt64)],
+        deletes: DeleteSet,
     ) -> [UInt8]? {
-        let structsChanged = self.store.clients.keys.contains { self.store.getState($0) != (beforeState[$0] ?? 0) }
-        guard structsChanged || !deletes.isEmpty else { return nil }
+        let written = changes.filter { $0.after > $0.before }
+        guard !written.isEmpty || !deletes.isEmpty else { return nil }
         var encoder = Lib0Encoder()
-        self.writeClientsStructs(&encoder, target: beforeState)
-        self.writeTransactionDeleteSet(&encoder, deletes)
+        self.writeClientsStructs(&encoder, written.map { (client: $0.client, clock: $0.before) })
+        deletes.write(into: &encoder)
         return encoder.bytes
-    }
-
-    private func writeTransactionDeleteSet(
-        _ encoder: inout Lib0Encoder, _ deletes: [(client: UInt64, clock: UInt64, length: UInt64)]
-    ) {
-        var byClient: [UInt64: [(clock: UInt64, length: UInt64)]] = [:]
-        for delete in deletes { byClient[delete.client, default: []].append((delete.clock, delete.length)) }
-        var perClient: [(client: UInt64, ranges: [(clock: UInt64, length: UInt64)])] = []
-        for (client, ranges) in byClient {
-            let sorted = ranges.sorted { $0.clock < $1.clock }
-            var merged: [(clock: UInt64, length: UInt64)] = []
-            for range in sorted {
-                if let last = merged.last, last.clock + last.length >= range.clock {
-                    let end = max(last.clock + last.length, range.clock + range.length)
-                    merged[merged.count - 1] = (last.clock, end - last.clock)
-                } else {
-                    merged.append(range)
-                }
-            }
-            perClient.append((client, merged))
-        }
-        perClient.sort { $0.client > $1.client }
-        encoder.writeVarUint(UInt64(perClient.count))
-        for entry in perClient {
-            encoder.writeVarUint(entry.client)
-            encoder.writeVarUint(UInt64(entry.ranges.count))
-            for range in entry.ranges {
-                encoder.writeVarUint(range.clock)
-                encoder.writeVarUint(range.length)
-            }
-        }
     }
 
     // MARK: Apply
@@ -302,7 +266,7 @@ final class NativeDoc {
         try self.readUpdate(self.buildClientRefs(parsed.clientBlocks), deletes: deletes)
         // Yjs collects the transaction's deletions when it ends, and throws where that fails; this
         // update is rejected instead, as the commit that collects has no error to report.
-        if self.gc, let deletes = self.store.deleteLog, self.store.collectionFails(deletes) {
+        if self.gc, let deletes = self.store.deleteSet, self.store.collectionFails(deletes) {
             throw YError.invalidUpdate
         }
     }
@@ -548,7 +512,13 @@ final class NativeDoc {
         var encoder = Lib0Encoder()
         let structCount = self.store.clients.values.reduce(0) { $0 + $1.count }
         encoder.reserveCapacity(structCount * 8 + 64)
-        self.writeClientsStructs(&encoder, target: target)
+        // Clients with structs the target lacks.
+        var pending: [(client: UInt64, clock: UInt64)] = []
+        for client in self.store.clients.keys {
+            let targetClock = target[client] ?? 0
+            if self.store.getState(client) > targetClock { pending.append((client, targetClock)) }
+        }
+        self.writeClientsStructs(&encoder, pending)
         self.writeDeleteSet(&encoder)
         return encoder.bytes
     }
@@ -565,15 +535,10 @@ final class NativeDoc {
         return result
     }
 
-    private func writeClientsStructs(_ encoder: inout Lib0Encoder, target: [UInt64: UInt64]) {
-        // Clients with structs the target lacks, written highest-id first (this
-        // ordering is what makes the integration conflict algorithm cheap).
-        var pending: [(client: UInt64, clock: UInt64)] = []
-        for client in self.store.clients.keys {
-            let targetClock = target[client] ?? 0
-            if self.store.getState(client) > targetClock { pending.append((client, targetClock)) }
-        }
-        pending.sort { $0.client > $1.client }
+    /// Writes the structs of `pending` clients from the given clocks on, highest client id first
+    /// (this ordering is what makes the integration conflict algorithm cheap).
+    private func writeClientsStructs(_ encoder: inout Lib0Encoder, _ pending: [(client: UInt64, clock: UInt64)]) {
+        let pending = pending.sorted { $0.client > $1.client }
         encoder.writeVarUint(UInt64(pending.count))
         for entry in pending { self.writeStructs(&encoder, client: entry.client, clock: entry.clock) }
     }

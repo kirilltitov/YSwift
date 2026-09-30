@@ -12,57 +12,6 @@
 import Synchronization
 
 final class NativeUndoManager {
-    /// yjs `DeleteSet`: id ranges per client, clients in the order they were first added (a JS
-    /// `Map`), ranges clock-ascending and merged once `sortAndMerge` has run.
-    private struct DeleteSet {
-        var clients: [(client: UInt64, ranges: [(clock: UInt64, length: UInt64)])] = []
-
-        /// `addToDeleteSet`.
-        mutating func add(_ client: UInt64, _ clock: UInt64, _ length: UInt64) {
-            if let index = self.clients.firstIndex(where: { $0.client == client }) {
-                self.clients[index].ranges.append((clock, length))
-            } else {
-                self.clients.append((client, [(clock, length)]))
-            }
-        }
-
-        /// `sortAndMergeDeleteSet`.
-        mutating func sortAndMerge() {
-            for index in self.clients.indices {
-                var merged: [(clock: UInt64, length: UInt64)] = []
-                for range in self.clients[index].ranges.sorted(by: { $0.clock < $1.clock }) {
-                    if let last = merged.last, last.clock + last.length >= range.clock {
-                        let length = max(last.length, range.clock + range.length - last.clock)
-                        merged[merged.count - 1] = (last.clock, length)
-                    } else {
-                        merged.append(range)
-                    }
-                }
-                self.clients[index].ranges = merged
-            }
-        }
-
-        /// `mergeDeleteSets([self, other])`.
-        func merged(with other: DeleteSet) -> DeleteSet {
-            var result = DeleteSet()
-            for entry in self.clients {
-                let tail = other.clients.first { $0.client == entry.client }?.ranges ?? []
-                result.clients.append((entry.client, entry.ranges + tail))
-            }
-            for entry in other.clients where !self.clients.contains(where: { $0.client == entry.client }) {
-                result.clients.append(entry)
-            }
-            result.sortAndMerge()
-            return result
-        }
-
-        /// `isDeleted`.
-        func contains(_ id: YID) -> Bool {
-            guard let entry = self.clients.first(where: { $0.client == id.client }) else { return false }
-            return entry.ranges.contains { id.clock >= $0.clock && id.clock < $0.clock + $0.length }
-        }
-    }
-
     private struct StackItem {
         var insertions: DeleteSet
         var deletions: DeleteSet
@@ -142,15 +91,12 @@ final class NativeUndoManager {
 
         // `transaction.afterState` iterates the store's clients in insertion order.
         var insertions = DeleteSet()
-        for client in self.doc.store.clientOrder {
-            let before = info.beforeState[client] ?? 0
-            if let after = info.afterState[client], after > before { insertions.add(client, before, after - before) }
+        for change in info.changes where change.after > change.before {
+            insertions.add(change.client, change.before, change.after - change.before)
         }
         // `transaction.deleteSet`, sorted and merged by the transaction cleanup before yjs calls
         // `afterTransaction` handlers.
-        var deletions = DeleteSet()
-        for delete in info.deletes { deletions.add(delete.client, delete.clock, delete.length) }
-        deletions.sortAndMerge()
+        let deletions = info.deleteSet
 
         let now = ContinuousClock.now
         if self.undoing {

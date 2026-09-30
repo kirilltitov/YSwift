@@ -27,7 +27,9 @@ extension CheckedUpdateTests {
             let doc = NativeDoc(clientID: 1, gc: false)
             doc.store.rejectsRunsUnderAnotherParent = false
             for update in updates { try? doc.applyUpdate(update) }
-            doc.store.cleanup(gc: true, deletes: [(client: 5, clock: 0, length: 2)])
+            var deletes = DeleteSet()
+            deletes.add(5, 0, 2)
+            doc.store.cleanup(gc: true, deleteSet: deletes, changes: doc.store.transactionChanges())
         }
     }
 

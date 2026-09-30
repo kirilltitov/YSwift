@@ -6,9 +6,9 @@
 final class NativeStore {
     /// Per-client structs, clock-ascending. The sole strong owner of every struct.
     var clients: [UInt64: [Struct]] = [:]
-    /// Clients in the order their first struct arrived: the iteration order of the yjs
+    /// Each client's position in the order its first struct arrived: the iteration order of the yjs
     /// `store.clients` Map, which `getStateVector` (and so an UndoManager's insertions) follows.
-    private(set) var clientOrder: [UInt64] = []
+    private var clientRank: [UInt64: Int] = [:]
 
     /// Bumped on every item split, so a transaction that only split items still merges them back
     /// on commit, as yjs does through `transaction._mergeStructs`.
@@ -64,9 +64,8 @@ final class NativeStore {
         return right
     }
 
-    /// When non-nil, `deleteItem` logs `(client, clock, length)` for the deletes made
-    /// during the current transaction (used to build the emitted update's delete set).
-    var deleteLog: [(client: UInt64, clock: UInt64, length: UInt64)]?
+    /// When non-nil, the ids deleted during the current transaction (yjs `transaction.deleteSet`).
+    var deleteSet: DeleteSet?
     /// Whether `deleteItem` deleted an item, and a type, during the current transaction. Only these
     /// deletions leave content to collect (an item that arrives deleted holds none), and only a type's
     /// collection can fail (`collectionFails`).
@@ -82,13 +81,30 @@ final class NativeStore {
 
     /// When non-nil, the types changed during the current transaction, recorded under the rule of
     /// yjs `addChangedTypeToTransaction`: a nested type counts only if its item existed before the
-    /// transaction (`transactionBeforeState`) and is not deleted.
+    /// transaction (`beforeState`) and is not deleted.
     var changedTypes: [ObjectIdentifier: YTypeImpl]?
+
+    /// The clock of every client the current transaction added structs to, as it was before the
+    /// transaction (yjs `transaction.beforeState` for the clients that changed). Recorded by
+    /// `addStruct`; the transaction resets it.
     var transactionBeforeState: [UInt64: UInt64] = [:]
+
+    /// `client`'s clock before the current transaction: a client it added nothing to is unchanged.
+    func beforeState(_ client: UInt64) -> UInt64 {
+        self.transactionBeforeState[client] ?? self.getState(client)
+    }
+
+    /// The clients the current transaction added structs to, with their clocks before and after,
+    /// in the order of the yjs `store.clients` Map that `transaction.afterState` follows.
+    func transactionChanges() -> [(client: UInt64, before: UInt64, after: UInt64)] {
+        self.transactionBeforeState
+            .map { (client: $0.key, before: $0.value, after: self.getState($0.key)) }
+            .sorted { self.clientRank[$0.client]! < self.clientRank[$1.client]! }
+    }
 
     private func addChangedType(_ type: YTypeImpl?) {
         guard self.changedTypes != nil, let type else { return }
-        if let item = type.item, item.deleted || item.id.clock >= self.transactionBeforeState[item.id.client] ?? 0 {
+        if let item = type.item, item.deleted || item.id.clock >= self.beforeState(item.id.client) {
             return
         }
         self.changedTypes?[ObjectIdentifier(type)] = type
@@ -143,7 +159,7 @@ final class NativeStore {
             guard !item.deleted else {
                 // `ContentType.delete`: a child deleted before this transaction is in no delete set of
                 // it, yet it is collected with the type; queue it so the cleanup merges it.
-                if depth > 1, item.id.clock < self.transactionBeforeState[item.id.client] ?? 0 {
+                if depth > 1, item.id.clock < self.beforeState(item.id.client) {
                     self.mergeStructs.append(item.id)
                 }
                 continue
@@ -155,7 +171,7 @@ final class NativeStore {
             item.markDeleted()
             self.deletedItemInTransaction = true
             self.version += 1
-            self.deleteLog?.append((item.id.client, item.id.clock, item.length))
+            self.deleteSet?.add(item.id.client, item.id.clock, item.length)
             if let name = item.parent?.name { self.changedTypeNames?.insert(name) }
             self.addChangedType(item.parent)
             self.checkChangedRootCompleteness(of: item)
@@ -193,18 +209,15 @@ final class NativeStore {
         self.clients.keys.sorted(by: >).map { (client: $0, clock: self.getState($0)) }
     }
 
-    /// Monotonic count of structs integrated via `addStruct` — used to detect
-    /// progress when retrying buffered (out-of-order) updates.
-    private(set) var integratedCount = 0
-
     /// Bumped on every structural change (insert / delete) so cached search markers
     /// can tell when they are stale.
     private(set) var version = 0
 
     func addStruct(_ struct: Struct) {
-        if clients[`struct`.id.client] == nil { self.clientOrder.append(`struct`.id.client) }
-        clients[`struct`.id.client, default: []].append(`struct`)
-        self.integratedCount += 1
+        let client = `struct`.id.client
+        if self.transactionBeforeState[client] == nil { self.transactionBeforeState[client] = self.getState(client) }
+        if clients[client] == nil { self.clientRank[client] = self.clientRank.count }
+        clients[client, default: []].append(`struct`)
         self.version += 1
         if let name = (`struct` as? Item)?.parent?.name { self.changedTypeNames?.insert(name) }
         if let item = `struct` as? Item {
@@ -217,17 +230,16 @@ final class NativeStore {
     /// Binary search for the struct covering `clock` (ported from `findIndexSS`,
     /// including the pivot heuristic).
     func findIndex(_ structs: [Struct], _ clock: UInt64) -> Int {
+        // Fields are read straight from the array: holding a struct in a variable retains it.
         var left = 0
         var right = structs.count - 1
-        var mid = structs[right]
-        var midClock = mid.id.clock
+        var midClock = structs[right].id.clock
         if midClock == clock { return right }
-        var midIndex = Int((Double(clock) / Double(midClock + mid.length - 1)) * Double(right))
+        var midIndex = Int((Double(clock) / Double(midClock + structs[right].length - 1)) * Double(right))
         while left <= right {
-            mid = structs[midIndex]
-            midClock = mid.id.clock
+            midClock = structs[midIndex].id.clock
             if midClock <= clock {
-                if clock < midClock + mid.length { return midIndex }
+                if clock < midClock + structs[midIndex].length { return midIndex }
                 left = midIndex + 1
             } else {
                 right = midIndex - 1
@@ -285,50 +297,23 @@ final class NativeStore {
         return index
     }
 
-    /// Snapshot of `client -> next clock` for every known client.
-    func snapshotState() -> [UInt64: UInt64] {
-        var state: [UInt64: UInt64] = [:]
-        for client in self.clients.keys { state[client] = self.getState(client) }
-        return state
-    }
-
-    /// Yjs `cleanupTransactions`: collects the transaction's delete set in every client first
-    /// (`tryGcDeleteSet`), then merges only what the transaction touched: around each delete range
-    /// (`tryMergeDeleteSet`), the structs it added, and around `mergeStructs`, in reverse. Merges within a
-    /// client do not depend on other clients, so the client order does not change the result.
-    func cleanup(gc: Bool, deletes: [(client: UInt64, clock: UInt64, length: UInt64)]) {
-        var deleteSet: [UInt64: [(clock: UInt64, length: UInt64)]] = [:]
-        var deleteClients: [UInt64] = []
-        for delete in deletes {
-            if deleteSet[delete.client] == nil { deleteClients.append(delete.client) }
-            deleteSet[delete.client, default: []].append((delete.clock, delete.length))
-        }
-        // `sortAndMergeDeleteSet`
-        for client in deleteClients {
-            var merged: [(clock: UInt64, length: UInt64)] = []
-            for range in deleteSet[client]!.sorted(by: { $0.clock < $1.clock }) {
-                if let last = merged.last, last.clock + last.length >= range.clock {
-                    merged[merged.count - 1].length = max(last.length, range.clock + range.length - last.clock)
-                } else {
-                    merged.append(range)
-                }
-            }
-            deleteSet[client] = merged
-        }
+    /// Yjs `cleanupTransactions`: collects the transaction's delete set, sorted and merged, in every
+    /// client first (`tryGcDeleteSet`), then merges only what the transaction touched: around each delete
+    /// range (`tryMergeDeleteSet`), the structs it added (`changes`), and around `mergeStructs`, in reverse.
+    /// Merges within a client do not depend on other clients, so the client order does not change the result.
+    func cleanup(gc: Bool, deleteSet: DeleteSet, changes: [(client: UInt64, before: UInt64, after: UInt64)]) {
         if gc, self.deletedItemInTransaction {
-            for client in deleteClients { self.garbageCollect(client, deleteSet[client]!) }
+            for entry in deleteSet.clients { self.garbageCollect(entry.client, entry.ranges) }
         }
-        for client in deleteClients {
+        for entry in deleteSet.clients {
             // A range within the structs the transaction added is merged with them below: merging
             // adjacent structs gives the same structs in any order.
-            let before = self.transactionBeforeState[client] ?? 0
-            let added = self.getState(client) != before ? before : UInt64.max
-            self.mergeAround(&self.clients[client]!, deleteSet[client]!.lazy.filter { $0.clock < added })
+            let before = self.beforeState(entry.client)
+            let added = self.getState(entry.client) != before ? before : UInt64.max
+            self.mergeAround(&self.clients[entry.client]!, entry.ranges.lazy.filter { $0.clock < added })
         }
-        for client in self.clientOrder {
-            let before = self.transactionBeforeState[client] ?? 0
-            guard self.getState(client) != before else { continue }
-            self.mergeFrom(&self.clients[client]!, before)
+        for change in changes where change.after != change.before {
+            self.mergeFrom(&self.clients[change.client]!, change.before)
         }
         for id in self.mergeStructs.reversed() {
             let position = self.findIndex(self.clients[id.client]!, id.clock)
@@ -441,18 +426,24 @@ final class NativeStore {
     /// runs out, and a child that is not deleted throws (`Item.gc`). The last happens without a cycle:
     /// yjs deletes only a key's current value with the type, but collects the whole key chain. Walks
     /// the types as yjs does, without changing them and without recursion.
-    func collectionFails(_ deletes: [(client: UInt64, clock: UInt64, length: UInt64)]) -> Bool {
+    ///
+    /// The answer does not depend on the order the types are walked in: it is whether any type reachable
+    /// from them has such a chain or child, or leads back into a type on the way to it, and a type is only
+    /// skipped once a walk through it found neither.
+    func collectionFails(_ deletes: DeleteSet) -> Bool {
         guard self.deletedTypeInTransaction else { return false }
         var collected = Set<ObjectIdentifier>()
-        for delete in deletes {
-            guard let structs = self.clients[delete.client] else { continue }
-            var index = self.findIndex(structs, delete.clock)
-            while index < structs.count, structs[index].id.clock < delete.clock + delete.length {
-                defer { index += 1 }
-                guard let item = structs[index] as? Item, item.deleted, !item.keep,
-                    case .type(let type, _, _) = item.content
-                else { continue }
-                if self.collectionFails(type, &collected) { return true }
+        for entry in deletes.clients {
+            guard let structs = self.clients[entry.client] else { continue }
+            for delete in entry.ranges {
+                var index = self.findIndex(structs, delete.clock)
+                while index < structs.count, structs[index].id.clock < delete.clock + delete.length {
+                    defer { index += 1 }
+                    guard let item = structs[index] as? Item, item.deleted, !item.keep,
+                        case .type(let type, _, _) = item.content
+                    else { continue }
+                    if self.collectionFails(type, &collected) { return true }
+                }
             }
         }
         return false
@@ -540,14 +531,17 @@ final class NativeStore {
     /// (`readAndApplyDeleteSet`). Returns the ranges of clocks not present yet, to be applied later.
     func applyDeleteSet(_ deleteSet: DeleteRanges) -> DeleteRanges {
         var unapplied: DeleteRanges = []
+        // The store's arrays are changed in place, one short access at a time: a local copy of a client's
+        // array was copied again by its first split, and `deleteItem` reads the store too.
         for client in deleteSet {
+            let id = client.client
             var rest: [(clock: UInt64, length: UInt64)] = []
-            defer { if !rest.isEmpty { unapplied.append((client.client, rest)) } }
-            guard var structs = clients[client.client], !structs.isEmpty else {
+            defer { if !rest.isEmpty { unapplied.append((id, rest)) } }
+            guard self.clients[id]?.isEmpty == false else {
                 rest = client.ranges
                 continue
             }
-            let state = self.getState(client.client)
+            let state = self.getState(id)
             for range in client.ranges {
                 let clock = range.clock
                 let clockEnd = clock + range.length
@@ -556,24 +550,25 @@ final class NativeStore {
                     continue
                 }
                 if state < clockEnd { rest.append((state, clockEnd - state)) }
-                var index = self.findIndex(structs, clock)
-                if let item = structs[index] as? Item, !item.deleted, item.id.clock < clock {
-                    structs.insert(splitItem(item, Int(clock - item.id.clock)), at: index + 1)
+                var index = self.findIndex(self.clients[id]!, clock)
+                if let item = self.clients[id]![index] as? Item, !item.deleted, item.id.clock < clock {
+                    let right = self.splitItem(item, Int(clock - item.id.clock))
+                    self.clients[id]!.insert(right, at: index + 1)
                     index += 1
                 }
-                while index < structs.count {
-                    let s = structs[index]
+                while index < self.clients[id]!.count {
+                    let s = self.clients[id]![index]
                     index += 1
                     guard s.id.clock < clockEnd else { break }
                     if let item = s as? Item, !item.deleted {
                         if clockEnd < item.id.clock + item.length {
-                            structs.insert(splitItem(item, Int(clockEnd - item.id.clock)), at: index)
+                            let right = self.splitItem(item, Int(clockEnd - item.id.clock))
+                            self.clients[id]!.insert(right, at: index)
                         }
                         self.deleteItem(item)
                     }
                 }
             }
-            clients[client.client] = structs
         }
         return unapplied
     }

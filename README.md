@@ -15,20 +15,23 @@ of scope.
 
 YSwift is a **pure-Swift** YATA + `lib0` implementation with no Rust runtime or
 build dependency. It is implemented and verified against **JS-Yjs v13.6.31**
-on macOS + Linux, byte-for-byte except for the documented semantically
-equivalent multi-attribute key-order case:
+on macOS + Linux, byte-for-byte except for two documented cases: the
+semantically equivalent multi-attribute key order, and the formatting cleanup
+yjs runs after a remote transaction on formatted text, which is not ported
+(see [Known limitations](DECISIONS.md#known-limitations)):
 
 - **Text** — insert/delete/format, `toDelta`, sync/encoding
   (`applyUpdateChecked`, legacy `applyUpdate`, `encodeStateAsUpdate` full + diff,
   `encodeStateVector`), `YUpdate.merge/diff`, out-of-order pending buffer,
-  sticky index, awareness, undo/redo, observers.
+  sticky index, awareness, undo/redo (a manager over one text or several), observers.
 - **Containers** — `Y.Array`, `Y.Map`, `Y.Xml` (fragment/element/text): build,
   materialise, and compatible wire output, subject to the same documented
   multi-attribute key-order exception.
 
 Verification: golden vectors + concurrent convergence + a recorded randomised
-differential fuzz (text/array/map) + adversarial code review. The public surface
-is gated directly against Yjs fixtures and convergence scenarios.
+differential fuzz (text/array/map) + a recorded undo/redo differential corpus +
+adversarial code review. The public surface is gated directly against Yjs
+fixtures and convergence scenarios.
 
 ### Document-less update limits
 
@@ -98,6 +101,19 @@ Text insertion also distinguishes an omitted attributes argument from an
 explicitly empty dictionary. `attributes: nil` inherits the active formatting at
 the insertion point, while `attributes: [:]` inserts unformatted text and then
 restores the surrounding format.
+
+### Undo across several texts
+
+A change that spans texts — moving the tail of one block into the next, say — is undone as one
+step by one `UndoManager` whose scope holds every text it touched:
+
+```swift
+let undo = UndoManager([first, second], trackedOrigins: ["replay"], captureTimeout: .zero)
+```
+
+As in Yjs, each `undo()`/`redo()` restores all the texts of the scope in one transaction and
+emits one update. Separate managers per text would each undo only their own text, in updates of
+their own, and would not reproduce what a Yjs peer with the combined scope writes.
 
 ## Implementation
 

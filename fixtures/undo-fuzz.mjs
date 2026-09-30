@@ -1,0 +1,1170 @@
+// Differential undo/redo fuzz generator (pinned JS-Yjs 13.6.31).
+//
+// Every scenario is a list of steps (local transactions, UndoManager undo/redo/stopCapturing,
+// UndoManager creation/destruction, and state exchange between documents). The generator runs
+// each scenario in Yjs and records, after every step, the update bytes the touched document
+// emitted, its state vector, the text and delta of every root and the canUndo/canRedo of its
+// undo managers, plus every document's final encoded state. The Swift runner
+// (UndoFuzzTests.swift) replays the same steps and reports the first divergent step.
+//
+// Scenarios are normalised while they run: indices are clamped to the current text and empty
+// operations are dropped, so any subsequence of steps is again a valid scenario (used by the
+// minimiser) and the recorded ops are exactly what both sides execute.
+//
+// Usage: node undo-fuzz.mjs --suite --out ../Tests/YSwiftTests/Fixtures/undo_fuzz_v13_6_31.json
+//        node undo-fuzz.mjs [--from N] [--count N] [--noformat] [--singlekey] [--server] [--nested] [--multiroot]
+//                           [--out path]
+// --noformat drops formatting attributes and format ops; --singlekey keeps one key per attribute
+// set; --server uses only the sheets-api-shaped template, whose browser document is a JS peer (the
+// Swift runner feeds its recorded bytes); --nested uses only the nested type template; --multiroot
+// scopes every undo manager to several roots. A larger corpus runs through UNDO_FUZZ_FIXTURE, e.g.
+//   node undo-fuzz.mjs --from 1000 --count 3000 --noformat --out /tmp/nf.json
+//   UNDO_FUZZ_FIXTURE=/tmp/nf.json swift test --filter UndoFuzz
+
+import * as Y from 'yjs'
+import { writeFileSync } from 'node:fs'
+
+export const YJS_VERSION = '13.6.31'
+const b64 = (u8) => Buffer.from(u8).toString('base64')
+
+export function makeRng(seed) {
+  let s = seed >>> 0
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0
+    let t = Math.imul(s ^ (s >>> 15), 1 | s)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+const LONG_TIMEOUT = 3_600_000
+
+/** Live Yjs model of one scenario. `apply` normalises a step, executes it and returns its record. */
+export class Sim {
+  constructor(config) {
+    this.config = config
+    this.docs = config.docs.map((d) => {
+      const doc = new Y.Doc({ gc: d.gc })
+      doc.clientID = d.client
+      // Type every root up front, as YSwift's roots always are. A Yjs root first created by a
+      // remote update is a plain AbstractType; upgrading it with getText later drops the
+      // "has formatting" state (search markers come back, remote formatting cleanup is skipped).
+      for (const root of config.roots) doc.getText(root)
+      const log = []
+      doc.on('update', (u) => log.push(b64(u)))
+      return { doc, log }
+    })
+    this.ums = config.ums.map(() => null)
+    this.created = new Set()
+    config.ums.forEach((spec, i) => {
+      if (!spec.late) this.createUM(i)
+    })
+  }
+
+  createUM(i) {
+    const spec = this.config.ums[i]
+    const { doc } = this.docs[spec.doc]
+    this.created.add(i)
+    // A fresh Set per manager: Yjs adds the manager itself to the set it is given. `roots` scopes
+    // one manager to several roots (an array typeScope), `root` to one.
+    const scope = spec.roots ? spec.roots.map((root) => doc.getText(root)) : doc.getText(spec.root)
+    this.ums[i] = new Y.UndoManager(scope, {
+      trackedOrigins: new Set(spec.origins),
+      captureTimeout: spec.timeout,
+    })
+  }
+
+  len(d, root) {
+    return this.docs[d].doc.getText(root).length
+  }
+
+  normalizeOp(d, o) {
+    const len = this.len(d, o.root)
+    switch (o.op) {
+      case 'insert':
+      case 'embed':
+      case 'embedtype':
+        return { ...o, index: Math.min(o.index, len) }
+      case 'nested':
+        return o
+      case 'delete':
+      case 'format': {
+        if (len === 0) return null
+        const index = Math.min(o.index, len - 1)
+        const length = Math.min(o.length, len - index)
+        if (length <= 0) return null
+        return { ...o, index, length }
+      }
+    }
+    throw new Error(`unknown op ${o.op}`)
+  }
+
+  applyOp(d, o) {
+    const t = this.docs[d].doc.getText(o.root)
+    switch (o.op) {
+      case 'insert': t.insert(o.index, o.text, o.attributes ?? undefined); break
+      case 'embed': t.insertEmbed(o.index, o.embed, o.attributes ?? undefined); break
+      case 'delete': t.delete(o.index, o.length); break
+      case 'format': t.format(o.index, o.length, o.attributes); break
+      // Nested types, for JS peers only (YSwift has no API to create them): a Y.Map or Y.Array
+      // embedded in the text, and edits inside the nth embedded type (by `path` for deeper ones).
+      case 'embedtype': t.insertEmbed(o.index, o.kind === 'map' ? new Y.Map() : new Y.Array()); break
+      case 'nested': {
+        let type = t.toDelta().filter((op) => op.insert instanceof Y.AbstractType)[o.nth].insert
+        for (const i of o.path ?? []) type = type.get(i)
+        if (o.set !== undefined) type.set(o.set, o.value instanceof Array ? new Y.Map() : o.value)
+        if (o.del !== undefined) type instanceof Y.Map ? type.delete(o.del) : type.delete(o.del, 1)
+        if (o.push !== undefined) type.push([o.push === 'map' ? new Y.Map() : o.push])
+        break
+      }
+    }
+  }
+
+  /** Returns `{ step, rec }` or null when the step became a no-op. */
+  apply(step) {
+    switch (step.k) {
+      case 'tx': {
+        const { doc } = this.docs[step.doc]
+        const ops = []
+        doc.transact(() => {
+          for (const raw of step.ops) {
+            const o = this.normalizeOp(step.doc, raw)
+            if (o === null) continue
+            this.applyOp(step.doc, o)
+            ops.push(o)
+          }
+        }, step.origin)
+        if (ops.length === 0 && this.docs[step.doc].log.length === this.mark(step.doc)) return null
+        return this.finish({ ...step, ops }, [step.doc])
+      }
+      case 'undo':
+      case 'redo': {
+        const um = this.ums[step.um]
+        if (um === null) return null
+        step.k === 'undo' ? um.undo() : um.redo()
+        return this.finish(step, [this.config.ums[step.um].doc])
+      }
+      case 'stop': {
+        const um = this.ums[step.um]
+        if (um === null) return null
+        um.stopCapturing()
+        return this.finish(step, [this.config.ums[step.um].doc])
+      }
+      case 'newum': {
+        if (this.created.has(step.um) || !this.config.ums[step.um].late) return null
+        this.createUM(step.um)
+        return this.finish(step, [this.config.ums[step.um].doc])
+      }
+      case 'destroy': {
+        const um = this.ums[step.um]
+        if (um === null) return null
+        um.destroy()
+        this.ums[step.um] = null
+        return this.finish(step, [this.config.ums[step.um].doc])
+      }
+      case 'sync': {
+        if (step.from === step.to) return null
+        const from = this.docs[step.from].doc
+        const to = this.docs[step.to].doc
+        const sent = Y.encodeStateAsUpdate(from, Y.encodeStateVector(to))
+        Y.applyUpdate(to, sent, step.origin)
+        return this.finish(step, [step.to], b64(sent))
+      }
+    }
+    throw new Error(`unknown step ${step.k}`)
+  }
+
+  mark(d) {
+    return (this.marks ?? [])[d] ?? 0
+  }
+
+  finish(step, touched, sent) {
+    const rec = { docs: touched.map((d) => this.snapshot(d)) }
+    if (sent !== undefined) rec.sent = sent
+    this.marks = this.docs.map((x) => x.log.length)
+    return { step, rec }
+  }
+
+  snapshot(d) {
+    const { doc, log } = this.docs[d]
+    const from = this.mark(d)
+    const texts = {}
+    const deltas = {}
+    for (const root of this.config.roots) {
+      const t = doc.getText(root)
+      texts[root] = t.toString()
+      // YSwift's toDelta leaves nested types out; scenarios with them compare bytes and text only.
+      if (!this.config.nodelta) deltas[root] = JSON.stringify(t.toDelta())
+    }
+    const ums = []
+    this.config.ums.forEach((spec, i) => {
+      if (spec.doc !== d || this.ums[i] === null) return
+      ums.push([i, this.ums[i].canUndo(), this.ums[i].canRedo()])
+    })
+    return { d, updates: log.slice(from), sv: b64(Y.encodeStateVector(doc)), texts, deltas, ums }
+  }
+
+  final() {
+    return this.docs.map(({ doc }) => ({ state: b64(Y.encodeStateAsUpdate(doc)), sv: b64(Y.encodeStateVector(doc)) }))
+  }
+}
+
+/** Runs `steps` against `config`, returning the normalised scenario with its Yjs expectations. */
+export function record(name, config, steps) {
+  const sim = new Sim(config)
+  const out = []
+  const expect = []
+  for (const s of steps) {
+    const r = sim.apply(s)
+    if (r === null) continue
+    out.push(r.step)
+    expect.push(r.rec)
+  }
+  return { name, ...config, steps: out, expect, final: sim.final() }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Random scenario generation. Steps are generated against a live Sim so indices are sensible.
+
+const ALPHABET = 'abcdefghij'
+// --noformat: no formatting attributes anywhere (isolates undo/redo from YText formatting paths).
+let NOFORMAT = false
+export function setNoFormat(value) {
+  NOFORMAT = value
+}
+// --singlekey: every formatting attribute set has one key. YSwift writes the format items of a
+// multi-key set in sorted key order (its Attributes dictionary has no key order), Yjs in object key
+// order; one key per set keeps that known YText difference out of the undo/redo corpus.
+let SINGLEKEY = false
+export function setSingleKey(value) {
+  SINGLEKEY = value
+}
+// --multiroot: every undo manager is scoped by a `roots` array (Yjs `new UndoManager([a, b])`): a
+// random subset of the roots in random order, sometimes with a duplicate; the server template uses
+// one manager over all roots per round instead of one per root.
+let MULTIROOT = false
+export function setMultiRoot(value) {
+  MULTIROOT = value
+}
+const pick = (rng, xs) => xs[Math.floor(rng() * xs.length)]
+const int = (rng, lo, hi) => lo + Math.floor(rng() * (hi - lo + 1))
+
+function randText(rng) {
+  if (rng() < 0.03) return pick(rng, ['😀', 'x😀', '😀y'])
+  let s = ''
+  for (let i = 0, n = int(rng, 1, 5); i < n; i++) s += pick(rng, ALPHABET.split(''))
+  return s
+}
+
+function randAttrs(rng) {
+  if (SINGLEKEY) return pick(rng, [{ bold: true }, { italic: true }, { bold: null }, { color: 'red' }, { link: 'https://x.test' }])
+  const r = rng()
+  if (r < 0.35) return { bold: true }
+  if (r < 0.5) return { italic: true }
+  if (r < 0.6) return { bold: null }
+  if (r < 0.7) return { color: pick(rng, ['red', 'blue']) }
+  if (r < 0.8) return { bold: true, italic: true }
+  if (r < 0.9) return { italic: null }
+  return { link: 'https://x.test' }
+}
+
+/** A stored segment format as PageHydration.attributes builds it (true / string values only). */
+function hydrationAttrs(rng) {
+  const out = {}
+  for (const k of ['bold', 'italic', 'strike', 'underline', 'code']) if (rng() < 0.3) out[k] = true
+  if (rng() < 0.2) out.color = pick(rng, ['red', 'blue'])
+  if (rng() < 0.15) out.background = 'yellow'
+  if (rng() < 0.1) out.link = 'https://x.test'
+  if (Object.keys(out).length === 0) out.bold = true
+  if (SINGLEKEY) return Object.fromEntries(Object.entries(out).slice(0, 1))
+  // YSwift's Attributes is an unordered dictionary and it writes several keys sorted; Yjs follows
+  // object key order. Sorting here keeps that known API-level difference out of the fuzz.
+  return Object.fromEntries(Object.entries(out).sort(([a], [b]) => (a < b ? -1 : 1)))
+}
+
+function randOp(rng, sim, d, roots) {
+  const root = pick(rng, roots)
+  const len = sim.len(d, root)
+  const r = rng()
+  if (len === 0 || r < 0.45) {
+    const o = { op: 'insert', root, index: int(rng, 0, len), text: randText(rng) }
+    const a = rng()
+    if (NOFORMAT) return o
+    if (a < 0.15) o.attributes = randAttrs(rng)
+    else if (a < 0.2) o.attributes = {}
+    return o
+  }
+  if (r < 0.78) {
+    const index = int(rng, 0, len - 1)
+    return { op: 'delete', root, index, length: int(rng, 1, Math.min(len - index, rng() < 0.7 ? 3 : 8)) }
+  }
+  if (r < 0.95 && !NOFORMAT) {
+    const index = int(rng, 0, len - 1)
+    return { op: 'format', root, index, length: int(rng, 1, len - index), attributes: randAttrs(rng) }
+  }
+  const o = { op: 'embed', root, index: int(rng, 0, len), embed: { b: int(rng, 0, 9) } }
+  if (rng() < 0.3 && !NOFORMAT) o.attributes = randAttrs(rng)
+  return o
+}
+
+/** Fisher-Yates, so the draws do not depend on the engine's sort. */
+function shuffle(rng, xs) {
+  const out = [...xs]
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = int(rng, 0, i)
+    ;[out[i], out[j]] = [out[j], out[i]]
+  }
+  return out
+}
+
+/** A non-empty subset of `roots` in random order, sometimes naming one root twice. */
+function randScope(rng, roots) {
+  const shuffled = shuffle(rng, roots)
+  const scope = shuffled.slice(0, int(rng, 1, roots.length))
+  if (rng() < 0.15) scope.push(pick(rng, scope))
+  return scope
+}
+
+function randClients(rng, n) {
+  const ids = new Set()
+  while (ids.size < n) ids.add(rng() < 0.5 ? int(rng, 1, 20) : int(rng, 1, 0xffffffff))
+  return [...ids]
+}
+
+/** Pushes a step through the sim, keeping it only when it did something. */
+function push(sim, list, step) {
+  const r = sim.apply(step)
+  if (r !== null) list.push(r.step)
+}
+
+function typingBurst(rng, sim, steps, d, root, origin) {
+  let pos = int(rng, 0, sim.len(d, root))
+  for (let i = 0, n = int(rng, 2, 6); i < n; i++) {
+    if (i > 0 && rng() < 0.15 && pos > 0) {
+      push(sim, steps, { k: 'tx', doc: d, origin, ops: [{ op: 'delete', root, index: pos - 1, length: 1 }] })
+      pos -= 1
+      continue
+    }
+    const ch = pick(rng, ALPHABET.split(''))
+    push(sim, steps, { k: 'tx', doc: d, origin, ops: [{ op: 'insert', root, index: pos, text: ch }] })
+    pos += 1
+  }
+}
+
+function randomScenario(seed) {
+  const rng = makeRng(seed)
+  const numDocs = rng() < 0.35 ? 1 : rng() < 0.85 ? 2 : 3
+  const clients = randClients(rng, numDocs)
+  const docs = clients.map((client) => ({ client, gc: rng() < 0.85 }))
+  const rootCount = rng() < 0.45 ? 1 : rng() < 0.65 ? 2 : 3
+  const roots = ['a', 'b', 'c'].slice(0, rootCount)
+  const ums = []
+  for (let d = 0; d < numDocs; d++) {
+    for (let i = 0, n = d === 0 ? int(rng, 1, 3) : int(rng, 0, 2); i < n; i++) {
+      const r = rng()
+      const origins = r < 0.6 ? ['u'] : r < 0.75 ? ['v'] : ['u', 'v']
+      if (MULTIROOT) {
+        ums.push({ doc: d, roots: randScope(rng, roots), origins, timeout: rng() < 0.8 ? 0 : LONG_TIMEOUT })
+        continue
+      }
+      ums.push({ doc: d, root: pick(rng, roots), origins, timeout: rng() < 0.8 ? 0 : LONG_TIMEOUT })
+    }
+  }
+  const config = { seed, docs, roots, ums }
+  const sim = new Sim(config)
+  const steps = []
+
+  if (rng() < 0.6) {
+    // Untracked baseline content, shared with every document.
+    for (let i = 0, n = int(rng, 1, 3); i < n; i++) {
+      const ops = []
+      for (let j = 0, m = int(rng, 1, 3); j < m; j++) ops.push(randOp(rng, sim, 0, roots))
+      push(sim, steps, { k: 'tx', doc: 0, origin: null, ops })
+    }
+    for (let d = 1; d < numDocs; d++) push(sim, steps, { k: 'sync', from: 0, to: d, origin: null })
+  }
+
+  const umsOf = (pred) => ums.map((u, i) => i).filter((i) => sim.ums[i] !== null && pred(sim.ums[i]))
+  for (let i = 0, n = int(rng, 8, 40); i < n; i++) {
+    const r = rng()
+    if (r < 0.35) {
+      const d = int(rng, 0, numDocs - 1)
+      const o = rng()
+      const origin = o < 0.55 ? 'u' : o < 0.7 ? 'v' : o < 0.85 ? null : 'x'
+      const ops = []
+      for (let j = 0, m = rng() < 0.8 ? int(rng, 1, 3) : int(rng, 4, 8); j < m; j++) ops.push(randOp(rng, sim, d, roots))
+      push(sim, steps, { k: 'tx', doc: d, origin, ops })
+    } else if (r < 0.45) {
+      const d = int(rng, 0, numDocs - 1)
+      typingBurst(rng, sim, steps, d, pick(rng, roots), rng() < 0.85 ? 'u' : null)
+    } else if (r < 0.65) {
+      const ready = umsOf((u) => u.canUndo())
+      const um = ready.length > 0 && rng() < 0.85 ? pick(rng, ready) : int(rng, 0, ums.length - 1)
+      push(sim, steps, { k: 'undo', um })
+    } else if (r < 0.8) {
+      const ready = umsOf((u) => u.canRedo())
+      const um = ready.length > 0 && rng() < 0.85 ? pick(rng, ready) : int(rng, 0, ums.length - 1)
+      push(sim, steps, { k: 'redo', um })
+    } else if (r < 0.95) {
+      if (numDocs < 2) continue
+      const from = int(rng, 0, numDocs - 1)
+      const to = (from + int(rng, 1, numDocs - 1)) % numDocs
+      push(sim, steps, { k: 'sync', from, to, origin: rng() < 0.4 ? 'u' : null })
+    } else {
+      push(sim, steps, { k: 'stop', um: int(rng, 0, ums.length - 1) })
+    }
+  }
+  return record(`${MULTIROOT ? 'mr' : ''}${NOFORMAT ? 'nf' : SINGLEKEY ? 'sk' : ''}random_${seed}`, config, steps)
+}
+
+/**
+ * The sheets-api shapes: a browser document B edits (typing, cuts through merged runs, formats,
+ * several roots), the server S receives the change with a tracked origin through fresh
+ * per-root undo managers, undoes them in reverse order and redoes them forward
+ * (PageTextHistoryReplay.derive), or replaces the roots locally and undoes that
+ * (rebasedHistoryUpdates); the server's result flows back to the browser, which keeps editing.
+ * With --multiroot the server uses one manager over all roots per round instead, undone and
+ * redone once, as the browser builds the inverse of a gesture that spans several blocks.
+ */
+function serverScenario(seed) {
+  const rng = makeRng(seed)
+  const clients = randClients(rng, 2)
+  // The browser document is JS-Yjs in production: the Swift runner feeds the server the bytes
+  // Yjs produced instead of replaying the browser's edits in YSwift.
+  const docs = clients.map((client, i) => (i === 0 ? { client, gc: true, js: true } : { client, gc: true }))
+  const rootCount = rng() < 0.4 ? 1 : rng() < 0.7 ? 2 : 3
+  const roots = ['a', 'b', 'c'].slice(0, rootCount)
+  const rounds = int(rng, 1, 4)
+  const ums = []
+  const plan = []
+  for (let round = 0; round < rounds; round++) {
+    // --multiroot: one manager whose scope is every root, as the browser builds its inverses.
+    const ids = MULTIROOT
+      ? [ums.push({ doc: 1, roots: shuffle(rng, roots), origins: ['r'], timeout: 0, late: true }) - 1]
+      : roots.map((root) => {
+        ums.push({ doc: 1, root, origins: ['r'], timeout: 0, late: true })
+        return ums.length - 1
+      })
+    plan.push({ ids, reseed: rng() < (HYDRATION ? 0.5 : 0.25) })
+  }
+  const config = { seed, docs, roots, ums }
+  const sim = new Sim(config)
+  const steps = []
+  const B = 0
+  const S = 1
+
+  for (const root of roots) {
+    for (let i = 0, n = int(rng, 1, 3); i < n; i++) {
+      if (rng() < 0.5) typingBurst(rng, sim, steps, B, root, 'b')
+      else push(sim, steps, { k: 'tx', doc: B, origin: 'b', ops: [randOp(rng, sim, B, [root])] })
+    }
+  }
+  push(sim, steps, { k: 'sync', from: B, to: S, origin: null })
+
+  for (const { ids, reseed } of plan) {
+    for (const um of ids) push(sim, steps, { k: 'newum', um })
+    if (reseed) {
+      // PageHydration.replace: delete everything, insert the plain text at 0, then format each
+      // stored segment (contiguous, non-overlapping) in order.
+      const ops = []
+      for (const root of roots) {
+        if (rng() < 0.5) continue
+        const len = sim.len(S, root)
+        if (len > 0) ops.push({ op: 'delete', root, index: 0, length: len })
+        const text = randText(rng) + randText(rng)
+        ops.push({ op: 'insert', root, index: 0, text })
+        if (NOFORMAT) continue
+        let at = 0
+        while (at < text.length) {
+          const n = int(rng, 1, text.length - at)
+          if (rng() < 0.6) ops.push({ op: 'format', root, index: at, length: n, attributes: hydrationAttrs(rng) })
+          at += n
+        }
+      }
+      if (ops.length > 0) push(sim, steps, { k: 'tx', doc: S, origin: 'r', ops })
+      for (const um of [...ids].reverse()) push(sim, steps, { k: 'undo', um })
+    } else {
+      for (let i = 0, n = int(rng, 1, 3); i < n; i++) {
+        if (rng() < 0.4) typingBurst(rng, sim, steps, B, pick(rng, roots), 'b')
+        else {
+          const ops = []
+          for (let j = 0, m = int(rng, 1, 4); j < m; j++) ops.push(randOp(rng, sim, B, roots))
+          push(sim, steps, { k: 'tx', doc: B, origin: 'b', ops })
+        }
+      }
+      push(sim, steps, { k: 'sync', from: B, to: S, origin: 'r' })
+      for (const um of [...ids].reverse()) push(sim, steps, { k: 'undo', um })
+      for (const um of ids) push(sim, steps, { k: 'redo', um })
+    }
+    for (const um of ids) push(sim, steps, { k: 'destroy', um })
+    if (rng() < 0.7) push(sim, steps, { k: 'sync', from: S, to: B, origin: null })
+    if (rng() < 0.5) {
+      push(sim, steps, { k: 'tx', doc: B, origin: 'b', ops: [randOp(rng, sim, B, roots)] })
+      push(sim, steps, { k: 'sync', from: B, to: S, origin: null })
+    }
+  }
+  const prefix = `${MULTIROOT ? 'mr' : ''}${NOFORMAT ? 'nf' : SINGLEKEY ? 'sk' : ''}`
+  return record(`${prefix}${HYDRATION ? 'srv' : 'server'}_${seed}`, config, steps)
+}
+
+// --server: every seed uses the sheets-api server template, with more PageHydration reseeds.
+let HYDRATION = false
+export function setServerOnly(value) {
+  HYDRATION = value
+}
+
+export function scenario(seed) {
+  return HYDRATION || seed % 3 === 0 ? serverScenario(seed) : randomScenario(seed)
+}
+
+// --nested: Y.Map and Y.Array values embedded in the text and edited by JS peers, with every JS
+// peer's updates reaching the Swift documents out of order, several merged into one, or twice.
+function nestedText(rng) {
+  let s = ''
+  for (let i = 0, n = int(rng, 1, 6); i < n; i++) s += pick(rng, ALPHABET.split(''))
+  return s
+}
+
+function nestedTextOp(rng, sim, d, roots) {
+  const root = pick(rng, roots)
+  const len = sim.len(d, root)
+  const r = rng()
+  if (len === 0 || r < 0.45) return { op: 'insert', root, index: int(rng, 0, len), text: nestedText(rng) }
+  if (r < 0.8) {
+    const index = int(rng, 0, len - 1)
+    return { op: 'delete', root, index, length: int(rng, 1, Math.min(len - index, rng() < 0.6 ? 3 : 20)) }
+  }
+  return { op: 'embed', root, index: int(rng, 0, len), embed: { b: int(rng, 0, 9) } }
+}
+
+/** An op inside (or creating) a type embedded in root `t` of JS peer `d`. */
+function nestedTypeOp(rng, sim, d) {
+  const t = sim.docs[d].doc.getText('t')
+  const types = t.toDelta().filter((op) => op.insert instanceof Y.AbstractType)
+  if (types.length === 0 || rng() < 0.3) {
+    return { op: 'embedtype', root: 't', index: int(rng, 0, t.length), kind: rng() < 0.6 ? 'map' : 'array' }
+  }
+  const nth = int(rng, 0, types.length - 1)
+  const type = types[nth].insert
+  if (type instanceof Y.Map) {
+    const key = pick(rng, ['k0', 'k1', 'k2'])
+    if (rng() < 0.25 && type.has(key)) return { op: 'nested', root: 't', nth, del: key }
+    const v = rng()
+    return { op: 'nested', root: 't', nth, set: key, value: v < 0.2 ? [] : v < 0.6 ? int(rng, 0, 99) : nestedText(rng) }
+  }
+  if (type.length > 0 && rng() < 0.3) return { op: 'nested', root: 't', nth, del: int(rng, 0, type.length - 1) }
+  return { op: 'nested', root: 't', nth, push: rng() < 0.2 ? 'map' : nestedText(rng) }
+}
+
+export function nestedScenario(seed) {
+  const rng = makeRng(seed)
+  const nSwift = int(rng, 1, 2)
+  const nJs = int(rng, 1, 4)
+  const ids = new Set()
+  while (ids.size < nSwift + nJs) ids.add(rng() < 0.5 ? int(rng, 1, 30) : int(rng, 1, 0xffffffff))
+  const docs = [...ids].map((client, i) => (i < nSwift ? { client, gc: rng() < 0.75 } : { client, gc: rng() < 0.75, js: true }))
+  const swift = docs.map((_, i) => i).filter((i) => !docs[i].js)
+  const js = docs.map((_, i) => i).filter((i) => docs[i].js)
+  const roots = rng() < 0.7 ? ['t'] : ['t', 'u']
+  const ums = []
+  for (let d = 0; d < docs.length; d++) {
+    for (let i = 0, n = int(rng, 0, 2); i < n; i++) {
+      const o = rng()
+      const origins = o < 0.4 ? ['u'] : o < 0.7 ? ['r'] : ['u', 'r']
+      ums.push({ doc: d, root: pick(rng, roots), origins, timeout: rng() < 0.7 ? 0 : LONG_TIMEOUT })
+    }
+  }
+  const config = { seed, docs, roots, ums, nodelta: true }
+  const sim = new Sim(config)
+  const steps = []
+  const expect = []
+  const keep = (r) => {
+    if (r === null) return
+    steps.push(r.step)
+    expect.push(r.rec)
+  }
+  const push = (step) => {
+    try {
+      keep(sim.apply(step))
+    } catch (e) {
+      // A nested op that no longer fits: the JS peer's transaction still committed what ran.
+      if (step.k !== 'tx' || !docs[step.doc].js) throw e
+      keep(sim.finish(step, [step.doc]))
+    }
+  }
+  // Updates each JS peer emitted, per Swift document, not yet delivered to it.
+  const queue = new Map()
+  for (const p of js) for (const s of swift) queue.set(`${p}>${s}`, [])
+  const localStep = (d, step) => {
+    const before = sim.docs[d].log.length
+    push(step)
+    if (!docs[d].js) return
+    for (const u of sim.docs[d].log.slice(before)) for (const s of swift) queue.get(`${d}>${s}`).push(u)
+  }
+  const pending = (d) => sim.docs[d].doc.store.pendingStructs !== null || sim.docs[d].doc.store.pendingDs !== null
+  const deliver = (p, s, all) => {
+    const q = queue.get(`${p}>${s}`)
+    if (q.length === 0) return
+    let bytes
+    if (all) {
+      bytes = Y.mergeUpdates(q.splice(0).map((u) => Buffer.from(u, 'base64')))
+    } else if (rng() < 0.25 && q.length > 1) {
+      const chosen = []
+      for (let i = 0, k = int(rng, 2, Math.min(q.length, 4)); i < k; i++) chosen.push(q.splice(int(rng, 0, q.length - 1), 1)[0])
+      bytes = Y.mergeUpdates(chosen.map((u) => Buffer.from(u, 'base64')))
+    } else {
+      const i = rng() < 0.7 ? int(rng, 0, q.length - 1) : 0
+      const u = rng() < 0.1 ? q[i] : q.splice(i, 1)[0]
+      bytes = Buffer.from(u, 'base64')
+    }
+    const origin = rng() < 0.5 ? 'r' : null
+    Y.applyUpdate(sim.docs[s].doc, bytes, origin)
+    keep(sim.finish({ k: 'sync', from: p, to: s, origin }, [s], b64(bytes)))
+  }
+  for (let i = 0, n = int(rng, 15, 60); i < n; i++) {
+    const r = rng()
+    if (r < 0.4) {
+      const d = int(rng, 0, docs.length - 1)
+      const o = rng()
+      const origin = o < 0.5 ? 'u' : o < 0.65 ? 'r' : o < 0.85 ? null : 'x'
+      const ops = []
+      if (docs[d].js) {
+        // Nested ops are generated one at a time against the live document of the JS peer.
+        for (let j = 0, m = rng() < 0.8 ? 1 : int(rng, 2, 4); j < m; j++) {
+          ops.push(rng() < 0.55 ? nestedTypeOp(rng, sim, d) : nestedTextOp(rng, sim, d, roots))
+        }
+      } else {
+        const big = rng() < 0.05
+        for (let j = 0, m = big ? int(rng, 30, 150) : rng() < 0.8 ? int(rng, 1, 3) : int(rng, 4, 10); j < m; j++) {
+          ops.push(nestedTextOp(rng, sim, d, roots))
+        }
+      }
+      localStep(d, { k: 'tx', doc: d, origin, ops })
+    } else if (r < 0.55) {
+      if (ums.length === 0) continue
+      const um = int(rng, 0, ums.length - 1)
+      localStep(ums[um].doc, { k: rng() < 0.6 ? 'undo' : 'redo', um })
+    } else if (r < 0.6) {
+      if (ums.length === 0) continue
+      const um = int(rng, 0, ums.length - 1)
+      localStep(ums[um].doc, { k: 'stop', um })
+    } else if (r < 0.8) {
+      if (js.length === 0) continue
+      deliver(pick(rng, js), pick(rng, swift), false)
+    } else {
+      // Full state exchange, never JS -> JS, never from a Swift document holding pending data.
+      const from = int(rng, 0, docs.length - 1)
+      const to = int(rng, 0, docs.length - 1)
+      if (from === to || (docs[from].js && docs[to].js) || (!docs[from].js && pending(from))) continue
+      localStep(to, { k: 'sync', from, to, origin: rng() < 0.5 ? 'r' : null })
+    }
+  }
+  // Flush every queue, then exchange full states until every document converges.
+  for (const p of js) for (const s of swift) deliver(p, s, true)
+  for (const p of js) for (const s of swift) localStep(s, { k: 'sync', from: p, to: s, origin: null })
+  for (const a of swift) for (const b of swift) if (a !== b && !pending(a)) localStep(b, { k: 'sync', from: a, to: b, origin: null })
+  for (const s of swift) for (const p of js) if (!pending(s)) localStep(p, { k: 'sync', from: s, to: p, origin: null })
+  return { name: `nested_${seed}`, ...config, steps, expect, final: sim.final() }
+}
+
+// Minimised divergences of YSwift 0.4.0 from Yjs 13.6.31 undo/redo, replayed first by --suite.
+const REPROS = {
+  redo_anchors_before_original: {"docs":[{"client":1,"gc":true}],"roots":["a"],"ums":[{"doc":0,"root":"a","origins":["u"],"timeout":0}],"steps":[{"k":"tx","doc":0,"origin":"u","ops":[{"op":"insert","root":"a","index":0,"text":"b"}]},{"k":"undo","um":0},{"k":"redo","um":0}]},
+  undo_recreates_before_original: {"docs":[{"client":2,"gc":true,"js":true},{"client":1,"gc":true}],"roots":["b"],"ums":[{"doc":1,"root":"b","origins":["r"],"timeout":0}],"steps":[{"k":"tx","doc":0,"origin":"b","ops":[{"op":"insert","root":"b","index":0,"text":"z"}]},{"k":"sync","from":0,"to":1,"origin":null},{"k":"tx","doc":0,"origin":"b","ops":[{"op":"delete","root":"b","index":0,"length":1}]},{"k":"sync","from":0,"to":1,"origin":"r"},{"k":"undo","um":0}]},
+  partly_covered_item_is_split: {"docs":[{"client":1,"gc":true}],"roots":["c"],"ums":[{"doc":0,"root":"c","origins":["u"],"timeout":0}],"steps":[{"k":"tx","doc":0,"origin":"u","ops":[{"op":"insert","root":"c","index":0,"text":"jh"},{"op":"delete","root":"c","index":1,"length":1}]},{"k":"undo","um":0},{"k":"redo","um":0}]},
+  merged_run_is_split_on_redo: {"docs":[{"client":1,"gc":true}],"roots":["a"],"ums":[{"doc":0,"root":"a","origins":["u"],"timeout":0}],"steps":[{"k":"tx","doc":0,"origin":"u","ops":[{"op":"insert","root":"a","index":0,"text":"j"}]},{"k":"undo","um":0},{"k":"tx","doc":0,"origin":"u","ops":[{"op":"insert","root":"a","index":0,"text":"h"}]},{"k":"undo","um":0},{"k":"redo","um":0}]},
+  other_root_is_out_of_scope: {"docs":[{"client":1,"gc":true}],"roots":["a","b"],"ums":[{"doc":0,"root":"a","origins":["u"],"timeout":0}],"steps":[{"k":"tx","doc":0,"origin":"u","ops":[{"op":"insert","root":"b","index":0,"text":"e"},{"op":"insert","root":"a","index":0,"text":"f"}]},{"k":"undo","um":0}]},
+  undo_follows_redone_insertion: {"docs":[{"client":1,"gc":true}],"roots":["b"],"ums":[{"doc":0,"root":"b","origins":["u"],"timeout":0}],"steps":[{"k":"tx","doc":0,"origin":"u","ops":[{"op":"insert","root":"b","index":0,"text":"d"}]},{"k":"tx","doc":0,"origin":"u","ops":[{"op":"delete","root":"b","index":0,"length":1}]},{"k":"undo","um":0},{"k":"undo","um":0}]},
+  redo_follows_delete_set_order: {"docs":[{"client":1,"gc":true}],"roots":["a"],"ums":[{"doc":0,"root":"a","origins":["u"],"timeout":3600000}],"steps":[{"k":"tx","doc":0,"origin":"u","ops":[{"op":"insert","root":"a","index":0,"text":"gge"}]},{"k":"tx","doc":0,"origin":"u","ops":[{"op":"delete","root":"a","index":1,"length":1}]},{"k":"undo","um":0},{"k":"redo","um":0}]},
+  split_keeps_keep_flag: {"docs":[{"client":1,"gc":true}],"roots":["a"],"ums":[{"doc":0,"root":"a","origins":["u"],"timeout":3600000}],"steps":[{"k":"tx","doc":0,"origin":"u","ops":[{"op":"insert","root":"a","index":0,"text":"ha"}]},{"k":"tx","doc":0,"origin":"u","ops":[{"op":"delete","root":"a","index":1,"length":1}]},{"k":"undo","um":0},{"k":"redo","um":0}]},
+  split_keeps_redone_link: {"docs":[{"client":1,"gc":true}],"roots":["a"],"ums":[{"doc":0,"root":"a","origins":["u"],"timeout":0}],"steps":[{"k":"tx","doc":0,"origin":"u","ops":[{"op":"insert","root":"a","index":0,"text":"ag"}]},{"k":"tx","doc":0,"origin":"u","ops":[{"op":"insert","root":"a","index":2,"text":"h"}]},{"k":"tx","doc":0,"origin":"u","ops":[{"op":"delete","root":"a","index":1,"length":2}]},{"k":"undo","um":0},{"k":"undo","um":0}]},
+  split_only_transaction_merges_back: {"docs":[{"client":1,"gc":true}],"roots":["a"],"ums":[{"doc":0,"root":"a","origins":["u"],"timeout":3600000},{"doc":0,"root":"a","origins":["u"],"timeout":0}],"steps":[{"k":"tx","doc":0,"origin":"u","ops":[{"op":"insert","root":"a","index":0,"text":"d"}]},{"k":"tx","doc":0,"origin":"u","ops":[{"op":"insert","root":"a","index":1,"text":"e"}]},{"k":"undo","um":0},{"k":"undo","um":1},{"k":"redo","um":0}]},
+  remote_content_deleted_orders_delete_set: {"docs":[{"client":1,"gc":true,"js":true},{"client":2,"gc":true}],"roots":["a"],"ums":[{"doc":1,"root":"a","origins":["r"],"timeout":0}],"steps":[{"k":"tx","doc":0,"origin":"b","ops":[{"op":"insert","root":"a","index":0,"text":"a"}]},{"k":"sync","from":0,"to":1,"origin":null},{"k":"tx","doc":1,"origin":null,"ops":[{"op":"insert","root":"a","index":1,"text":"x"}]},{"k":"sync","from":1,"to":0,"origin":null},{"k":"tx","doc":0,"origin":"b","ops":[{"op":"insert","root":"a","index":2,"text":"y"},{"op":"delete","root":"a","index":0,"length":3}]},{"k":"sync","from":0,"to":1,"origin":"r"},{"k":"undo","um":0}]},
+}
+
+// The undo/redo parity audit scenarios (S1b–S15): each pins one proven departure of YSwift 0.4.0
+// from Yjs 13.6.31 with the exact shape it was found in. Ops helpers keep them readable.
+const ins = (root, index, text, attributes) => ({ op: 'insert', root, index, text, ...(attributes ? { attributes } : {}) })
+const del = (root, index, length) => ({ op: 'delete', root, index, length })
+const fmt = (root, index, length, attributes) => ({ op: 'format', root, index, length, attributes })
+const tx = (doc, origin, ...ops) => ({ k: 'tx', doc, origin, ops })
+const sync = (from, to, origin = null) => ({ k: 'sync', from, to, origin })
+const undo = (um) => ({ k: 'undo', um })
+const redo = (um) => ({ k: 'redo', um })
+const one = (client = 1) => [{ client, gc: true }]
+const um = (root, timeout = 0, doc = 0) => ({ doc, root, origins: ['o'], timeout })
+// Nested types, run by a Yjs peer (`peer`) against the Swift server document.
+const et = (index, kind) => ({ op: 'embedtype', root: 't', index, kind })
+const nset = (nth, set, value, path) => ({ op: 'nested', root: 't', nth, set, value, ...(path ? { path } : {}) })
+const npush = (nth, push) => ({ op: 'nested', root: 't', nth, push })
+const ndel = (nth, key) => ({ op: 'nested', root: 't', nth, del: key })
+const peer = (client) => ({ client, gc: true, js: true })
+const server = { client: 9, gc: true }
+const AUDIT = {
+  // Two adjacent deleted items of two clients are re-created in one undo.
+  audit_s1b_adjacent_recreations: {
+    docs: [...one(1), ...one(2)], roots: ['t'], ums: [um('t')],
+    steps: [tx(0, null, ins('t', 0, 'ac')), sync(0, 1), tx(1, null, ins('t', 1, 'b')), sync(1, 0),
+      tx(0, 'o', del('t', 1, 2)), undo(0)],
+  },
+  // A tracked insertion that merges into the run to its left is undone alone.
+  audit_s2_merged_insertion: {
+    docs: one(), roots: ['t'], ums: [um('t')],
+    steps: [tx(0, null, ins('t', 0, 'ab')), tx(0, 'o', ins('t', 2, 'c')), undo(0), redo(0)],
+  },
+  // The same with the run continued by a Yjs peer whose update the server applies tracked.
+  audit_s2r_remote_run_continuation: {
+    docs: [{ client: 1, gc: true, js: true }, { client: 9, gc: true }], roots: ['t'], ums: [um('t', 0, 1)],
+    steps: [tx(0, 'b', ins('t', 0, 'ab')), sync(0, 1), tx(0, 'b', ins('t', 2, 'c')), sync(0, 1, 'o'), undo(0),
+      redo(0)],
+  },
+  // Kept deletions of two steps merge into one item; undoing the later step restores only its part.
+  audit_s3_merged_kept_deletions: {
+    docs: one(), roots: ['t'], ums: [um('t')],
+    steps: [tx(0, null, ins('t', 0, 'abc')), tx(0, 'o', del('t', 1, 1)), tx(0, 'o', del('t', 1, 1)), undo(0)],
+  },
+  // One tracked transaction over two roots, one manager per root (derive: undo reversed, redo forward).
+  audit_s5_two_roots: {
+    docs: one(), roots: ['A', 'B'], ums: [um('A'), um('B')],
+    steps: [tx(0, null, ins('A', 0, 'aa')), tx(0, null, ins('B', 0, 'bb')), tx(0, 'o', ins('A', 1, 'X'), del('B', 0, 1)),
+      undo(1), undo(0), redo(0), redo(1)],
+  },
+  audit_s5b_two_roots_deletions: {
+    docs: one(), roots: ['A', 'B'], ums: [um('A'), um('B')],
+    steps: [tx(0, null, ins('A', 0, 'aa')), tx(0, null, ins('B', 0, 'bb')), tx(0, 'o', del('A', 0, 1), del('B', 0, 1)),
+      undo(1), undo(0), redo(0), redo(1)],
+  },
+  audit_s5c_two_roots_insertions: {
+    docs: one(), roots: ['A', 'B'], ums: [um('A'), um('B')],
+    steps: [tx(0, null, ins('A', 0, 'aa')), tx(0, null, ins('B', 0, 'bb')), tx(0, 'o', ins('A', 1, 'X'), ins('B', 1, 'Y')),
+      undo(1), undo(0), redo(0), redo(1)],
+  },
+  // Redo re-creates two inserted items in clock order, not deletion order.
+  audit_s6_two_insertions: {
+    docs: one(), roots: ['t'], ums: [um('t')],
+    steps: [tx(0, null, ins('t', 0, 'xy')), tx(0, 'o', ins('t', 0, 'A'), ins('t', 3, 'B')), undo(0), redo(0)],
+  },
+  // A formatted insertion: format start, text and format end are re-created in clock order.
+  audit_s6f_formatted_insertion: {
+    docs: one(), roots: ['t'], ums: [um('t')],
+    steps: [tx(0, null, ins('t', 0, 'xy')), tx(0, 'o', ins('t', 1, 'B', { bold: true })), undo(0), redo(0)],
+  },
+  audit_s6d_two_client_deletion_cycle: {
+    docs: [...one(1), ...one(2)], roots: ['t'], ums: [um('t')],
+    steps: [tx(0, null, ins('t', 0, 'ac')), sync(0, 1), tx(1, null, ins('t', 1, 'b')), sync(1, 0),
+      tx(0, 'o', del('t', 0, 3)), undo(0), redo(0), undo(0)],
+  },
+  // Deletions merged into one stack item (captureTimeout) are redone in clock order.
+  audit_s7_merged_stack_item: {
+    docs: one(), roots: ['t'], ums: [um('t', LONG_TIMEOUT)],
+    steps: [tx(0, null, ins('t', 0, 'abc')), tx(0, 'o', del('t', 2, 1)), tx(0, 'o', del('t', 0, 1)), undo(0)],
+  },
+  // A kept deleted run split by a concurrent insertion keeps both halves for the undo.
+  audit_s8_kept_run_split_remotely: {
+    docs: [...one(1), ...one(2)], roots: ['t'], ums: [um('t')],
+    steps: [tx(0, null, ins('t', 0, 'abc')), sync(0, 1), tx(0, 'o', del('t', 1, 2)), tx(1, null, ins('t', 2, 'Z')),
+      sync(1, 0), undo(0)],
+  },
+  // Deletions outside the manager's root are not kept, so the GC drops their content.
+  audit_s9_out_of_scope_deletion_is_collected: {
+    docs: one(), roots: ['A', 'B'], ums: [um('A')],
+    steps: [tx(0, null, ins('A', 0, 'aa')), tx(0, null, ins('B', 0, 'bb')), tx(0, 'o', del('A', 0, 1), del('B', 0, 1))],
+  },
+  // Redo after a concurrent insertion next to the undone item.
+  audit_s11_redo_after_remote_insertion: {
+    docs: [...one(1), ...one(2)], roots: ['t'], ums: [um('t')],
+    steps: [tx(0, null, ins('t', 0, 'ab')), tx(0, 'o', ins('t', 1, 'X')), sync(0, 1), tx(1, null, ins('t', 2, 'Y')),
+      undo(0), sync(1, 0), redo(0)],
+  },
+  // Undo and redo of a formatting change.
+  audit_s12_format_change: {
+    docs: one(), roots: ['t'], ums: [um('t')],
+    steps: [tx(0, null, ins('t', 0, 'abcd')), tx(0, 'o', fmt('t', 1, 2, { bold: true })), undo(0), redo(0)],
+  },
+  // Undo of a deletion of formatted text re-creates format items and text in clock order.
+  audit_s13_formatted_deletion: {
+    docs: one(), roots: ['t'], ums: [um('t')],
+    steps: [tx(0, null, ins('t', 0, 'ab')), tx(0, null, ins('t', 1, 'XY', { bold: true })), tx(0, 'o', del('t', 1, 2)),
+      undo(0)],
+  },
+  // Insertions of two remote clients in one tracked update, in the store's client order.
+  audit_s14_two_remote_clients: {
+    docs: [...one(1), ...one(2), ...one(3), ...one(9)], roots: ['t'], ums: [um('t', 0, 3)],
+    steps: [tx(0, null, ins('t', 0, 'ab')), sync(0, 1), sync(0, 2), sync(0, 3), tx(1, null, ins('t', 1, 'X')),
+      tx(2, null, ins('t', 2, 'Y')), sync(1, 0), sync(2, 0), sync(0, 3, 'o'), undo(0), redo(0)],
+  },
+  // Nested types (from a Yjs peer) inside the undo scope: undo re-creates a deleted embedded map
+  // and array, then their children inside the copies (redoItem's parent tracing), and redo deletes
+  // the copies again.
+  audit_nested_types_recreated_in_their_copies: {
+    docs: [{ client: 1, gc: true, js: true }, { client: 9, gc: true }], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'abc'), { op: 'embedtype', root: 't', index: 1, kind: 'map' },
+      { op: 'embedtype', root: 't', index: 3, kind: 'array' }),
+    tx(0, 'b', { op: 'nested', root: 't', nth: 0, set: 'k', value: 'v' }, { op: 'nested', root: 't', nth: 1, push: 'x' },
+      { op: 'nested', root: 't', nth: 1, push: 'map' }, { op: 'nested', root: 't', nth: 1, push: 'y' }),
+    tx(0, 'b', { op: 'nested', root: 't', nth: 1, path: [1], set: 'deep', value: 1 }),
+    sync(0, 1), tx(0, 'b', del('t', 0, 5)), sync(0, 1, 'o'), undo(0), redo(0), undo(0)],
+  },
+  // A map key overwritten in a tracked step: undo restores the old value after the newer one
+  // (redoItem's map branch skips right neighbours that the step inserted).
+  audit_nested_map_value_restored: {
+    docs: [{ client: 1, gc: true, js: true }, { client: 9, gc: true }], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), { op: 'embedtype', root: 't', index: 1, kind: 'map' }),
+      tx(0, 'b', { op: 'nested', root: 't', nth: 0, set: 'k', value: 'v1' }), sync(0, 1),
+      tx(0, 'b', del('t', 0, 1), { op: 'nested', root: 't', nth: 0, set: 'k', value: 'v2' }), sync(0, 1, 'o'), undo(0),
+      redo(0)],
+  },
+  // A newer untracked value of the key wins: undo cannot restore the old one (redoItem gives up).
+  audit_nested_map_newer_value_wins: {
+    docs: [{ client: 1, gc: true, js: true }, { client: 9, gc: true }], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), { op: 'embedtype', root: 't', index: 1, kind: 'map' }),
+      tx(0, 'b', { op: 'nested', root: 't', nth: 0, set: 'k', value: 'v1' }), sync(0, 1),
+      tx(0, 'b', del('t', 0, 1), { op: 'nested', root: 't', nth: 0, set: 'k', value: 'v2' }), sync(0, 1, 'o'),
+      tx(0, 'b', { op: 'nested', root: 't', nth: 0, set: 'k', value: 'v3' }), sync(0, 1), undo(0), redo(0)],
+  },
+  // A whole-text replace (PageHydration.replace) of text whose clocks are out of document order.
+  audit_s15_replace_out_of_order_text: {
+    docs: one(), roots: ['t'], ums: [um('t')],
+    steps: [tx(0, null, ins('t', 0, 'ac')), tx(0, null, ins('t', 1, 'b')), tx(0, 'o', del('t', 0, 3), ins('t', 0, 'z')),
+      undo(0), redo(0)],
+  },
+  // Collecting a deleted type turns its children into GC structs (Item.gc with parentGCd), which
+  // the store's delete set covers; a child left behind without its parent cannot be encoded.
+  audit_nested_gc_map_children: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), tx(0, 'b', nset(0, 'k', 'v1')), sync(0, 1),
+      tx(0, 'b', del('t', 1, 1)), sync(0, 1)],
+  },
+  audit_nested_gc_recursive: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'array')), tx(0, 'b', npush(0, 'x'), npush(0, 'map'), npush(0, 'y')),
+      tx(0, 'b', nset(0, 'deep', 1, [1])), tx(0, 'b', nset(0, 'deep', 2, [1])), sync(0, 1), tx(0, 'b', del('t', 1, 1)),
+      sync(0, 1)],
+  },
+  // Every value a key ever held is collected, and the server's next update still encodes.
+  audit_nested_gc_overwritten_key: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'k', 'v1')), sync(0, 1),
+      tx(0, 'b', nset(0, 'k', 'v2')), sync(0, 1), tx(0, 'b', del('t', 1, 1)), sync(0, 1), tx(1, null, ins('t', 1, 'z')),
+      sync(1, 0)],
+  },
+  audit_nested_undo_under_remotely_deleted_parent: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'k', 'v1'), ins('t', 0, 'z')),
+      sync(0, 1, 'o'), tx(0, 'b', del('t', 2, 1)), sync(0, 1), undo(0), redo(0)],
+  },
+  // Deleting a type deletes its children (ContentType.delete), including ones that arrived after the
+  // step that inserted it: undo removes them with the type and redo re-creates them in its copy.
+  audit_nested_undo_deletes_map_children: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab')), sync(0, 1), tx(0, 'b', et(1, 'map')), sync(0, 1, 'o'),
+      tx(0, 'b', nset(0, 'k', 'v')), sync(0, 1), undo(0), redo(0)],
+  },
+  audit_nested_undo_deletes_array_children: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab')), sync(0, 1), tx(0, 'b', et(1, 'array')), sync(0, 1, 'o'),
+      tx(0, 'b', npush(0, 'x'), npush(0, 'y')), sync(0, 1), undo(0), redo(0)],
+  },
+  // Map values are deleted in the order their keys were first set (the _map order). With values of
+  // three clients that decides the client order of the delete set, and with it the redo clocks.
+  audit_nested_undo_deletes_map_keys_in_key_order: {
+    docs: [peer(1), peer(2), peer(3), peer(4), server], roots: ['t'], ums: [um('t', 0, 4)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab')), sync(0, 4), tx(0, 'b', et(1, 'map')), sync(0, 4, 'o'), sync(4, 1), sync(4, 2),
+      sync(4, 3), tx(3, 'b', nset(0, 'q', 1)), sync(3, 4), tx(1, 'b', nset(0, 'a', 1)), sync(1, 4),
+      tx(2, 'b', nset(0, 'm', 1)), sync(2, 4), tx(3, 'b', nset(0, 'c', 1)), sync(3, 4), undo(0), redo(0), undo(0)],
+  },
+  // Outside undo: the server deleting an embedded map, and a remote delete of a map that lands
+  // after a concurrent key, delete the children too.
+  audit_nested_local_delete_deletes_children: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), tx(0, 'b', nset(0, 'k', 'v')), sync(0, 1),
+      tx(1, null, del('t', 1, 1)), sync(1, 0)],
+  },
+  audit_nested_remote_delete_covers_concurrent_key: {
+    docs: [peer(1), peer(2), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), sync(0, 2), sync(2, 1), tx(1, 'b', nset(0, 'k', 'v')),
+      sync(1, 2), tx(0, 'b', del('t', 1, 1)), sync(0, 2), sync(2, 0), sync(2, 1)],
+  },
+  // A tracked step that changes only a type nested in the text is captured: Yjs checks the scope
+  // against transaction.changedParentTypes, where a change reports every type above it.
+  audit_nested_only_tracked_update: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), tx(0, 'b', nset(0, 'k', 'v1')), sync(0, 1),
+      tx(0, 'b', nset(0, 'k', 'v2')), sync(0, 1, 'o'), undo(0), redo(0)],
+  },
+  audit_nested_array_push_tracked: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'array')), sync(0, 1), tx(0, 'b', npush(0, 'x')), sync(0, 1, 'o'),
+      undo(0), redo(0)],
+  },
+  audit_nested_deep_update_tracked: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'array')), tx(0, 'b', npush(0, 'map')), sync(0, 1),
+      tx(0, 'b', nset(0, 'deep', 1, [0])), sync(0, 1, 'o'), undo(0), redo(0)],
+  },
+  // A key set in a type the server has deleted changes no type Yjs reports: nothing is captured.
+  audit_nested_update_in_deleted_type_untracked: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(1, 'map')), sync(0, 1), tx(1, null, del('t', 1, 1)),
+      tx(0, 'b', nset(0, 'k', 'v')), sync(0, 1, 'o'), undo(0)],
+  },
+  // A fresh tracked edit clears the redo stack through `clear(false, true)`, which un-keeps the
+  // stack's deletions and their parent items. An untracked delete of the embedded map then collects
+  // it: the map becomes ContentDeleted and its children GC structs.
+  audit_redo_clear_unkeeps_parent_local_delete: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', et(0, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'k0', 1)), sync(0, 1, 'o'), undo(0),
+      tx(1, 'o', ins('t', 1, 'x')), tx(1, null, del('t', 0, 1))],
+  },
+  audit_redo_clear_unkeeps_parent_remote_delete: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', et(0, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'k0', 1)), sync(0, 1, 'o'), undo(0),
+      tx(1, 'o', ins('t', 1, 'x')), sync(1, 0), tx(0, 'b', del('t', 0, 1)), sync(0, 1)],
+  },
+  // Control: without the clearing edit the redo stack still keeps the map.
+  audit_redo_kept_parent_local_delete: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', et(0, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'k0', 1)), sync(0, 1, 'o'), undo(0),
+      tx(1, null, del('t', 0, 1))],
+  },
+  // The clearing edit deletes the map itself: the redo stack is un-kept first, then the edit's own
+  // deletions are kept, so the map survives for the undo that re-creates it.
+  audit_redo_clear_then_keep_tracked_delete: {
+    docs: [peer(1), server], roots: ['t'], ums: [um('t', 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', et(0, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'k0', 1)), sync(0, 1, 'o'), undo(0),
+      tx(1, 'o', del('t', 0, 1)), undo(0)],
+  },
+}
+
+// A deleted map entry the cleanup merges into its left neighbour must become the key's current
+// value (Transaction.js tryToMergeWithLefts). The map collected by a later transaction then walks
+// the key's entries from the merged one; from the absorbed one it replaced the merged struct and
+// crashed. The key's delete and the map's delete reach the server in separate updates.
+const MERGED_ENTRY = {
+  merged_map_entry_then_map_deleted_locally: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, null, et(0, 'map'), nset(0, 'k', 1), nset(0, 'k', 2)), sync(0, 1), tx(0, null, ndel(0, 'k')),
+      sync(0, 1), tx(1, null, del('t', 0, 1))],
+  },
+  merged_map_entry_then_map_deleted_remotely: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, null, et(0, 'map'), nset(0, 'k', 1), nset(0, 'k', 2)), sync(0, 1), tx(0, null, ndel(0, 'k')),
+      sync(0, 1), tx(0, null, del('t', 0, 1)), sync(0, 1)],
+  },
+  // The sheets-api shape: the map sits between characters of a block's text.
+  merged_map_entry_then_map_deleted_in_text: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, null, ins('t', 0, 'ab'), et(1, 'map'), nset(0, 'k', 1), nset(0, 'k', 2)), sync(0, 1),
+      tx(0, null, ndel(0, 'k')), sync(0, 1), tx(1, null, del('t', 0, 3))],
+  },
+}
+
+// Transaction cleanup (Transaction.js `cleanupTransactions`): Yjs collects and merges only what a
+// transaction touched — its delete set, the structs it added and the structs it split
+// (`_mergeStructs`) — so a merge Yjs never attempts must not happen in YSwift either.
+const CLEANUP = {
+  // Overwritten (no longer current) values of a nested map become GC structs when the map is
+  // collected, but they are in no delete set, not new and not in `_mergeStructs`: with a live item
+  // between them and the deleted range, Yjs leaves them unmerged.
+  cleanup_overwritten_values_isolated_remote: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(2, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'a', 'v1')), sync(0, 1),
+      tx(0, 'b', nset(0, 'b', 'v1')), sync(0, 1), tx(0, 'b', ins('t', 0, 'z')), sync(0, 1),
+      tx(0, 'b', nset(0, 'a', 'v2')), sync(0, 1), tx(0, 'b', nset(0, 'b', 'v2')), sync(0, 1),
+      tx(0, 'b', del('t', 3, 1)), sync(0, 1)],
+  },
+  cleanup_overwritten_values_isolated_local: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(2, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'a', 'v1')), sync(0, 1),
+      tx(0, 'b', nset(0, 'b', 'v1')), sync(0, 1), tx(0, 'b', ins('t', 0, 'z')), sync(0, 1),
+      tx(0, 'b', nset(0, 'a', 'v2')), sync(0, 1), tx(0, 'b', nset(0, 'b', 'v2')), sync(0, 1),
+      tx(1, null, del('t', 3, 1)), sync(1, 0)],
+  },
+  // Control: without the live item, the merges that start at the deleted range reach the old values.
+  cleanup_overwritten_values_chain_reaches: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(2, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'a', 'v1')), sync(0, 1),
+      tx(0, 'b', nset(0, 'b', 'v1')), sync(0, 1), tx(0, 'b', nset(0, 'a', 'v2')), sync(0, 1),
+      tx(0, 'b', nset(0, 'b', 'v2')), sync(0, 1), tx(0, 'b', del('t', 2, 1)), sync(0, 1)],
+  },
+  // Values deleted before their map are merged through ContentType.delete's `_mergeStructs` push.
+  cleanup_deleted_current_values_merge_via_merge_structs: {
+    docs: [peer(1), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(2, 'map')), sync(0, 1), tx(0, 'b', nset(0, 'a', 'v1')), sync(0, 1),
+      tx(0, 'b', nset(0, 'b', 'v1')), sync(0, 1), tx(0, 'b', ins('t', 0, 'z')), sync(0, 1),
+      tx(0, 'b', ndel(0, 'a')), sync(0, 1), tx(0, 'b', ndel(0, 'b')), sync(0, 1), tx(0, 'b', del('t', 3, 1)),
+      sync(0, 1)],
+  },
+}
+// A map created by one client, its keys set by another, and the map deleted in one transaction: Yjs
+// collects every client before it merges any, so the children's GC structs merge whichever client
+// comes first. Several client pairs, because the order YSwift used to walk them was hash order.
+for (const [c1, c2] of [[1, 2], [2, 1], [3, 7], [7, 3], [11, 5], [5, 11], [100, 200], [200, 100], [4, 13], [13, 4],
+  [21, 22], [22, 21]]) {
+  CLEANUP[`cleanup_cross_client_children_${c1}_${c2}`] = {
+    docs: [peer(c1), peer(c2), server], roots: ['t'], ums: [], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), et(2, 'map')), sync(0, 2), sync(2, 1),
+      tx(1, 'b', nset(0, 'a', 1), nset(0, 'b', 1)), sync(1, 2), tx(0, 'b', del('t', 2, 1)), sync(0, 2)],
+  }
+}
+
+// One manager over several roots (Yjs `new UndoManager([A, B])`), the way sheets-web builds the
+// inverse of a gesture that touches several blocks: a transaction is captured when it changes any
+// root of the scope, and one undo or redo restores every root in one transaction.
+const umr = (roots, timeout = 0, doc = 0) => ({ doc, roots, origins: ['o'], timeout })
+const late = (spec) => ({ ...spec, late: true })
+const newum = (um) => ({ k: 'newum', um })
+const etIn = (root, index, kind) => ({ op: 'embedtype', root, index, kind })
+const nsetIn = (root, nth, set, value, path) => ({ op: 'nested', root, nth, set, value, ...(path ? { path } : {}) })
+const npushIn = (root, nth, push) => ({ op: 'nested', root, nth, push })
+const S5_STEPS = [tx(0, null, ins('A', 0, 'aa')), tx(0, null, ins('B', 0, 'bb'))]
+const SCOPE = {
+  // The audit_s5 transactions under one manager over both roots: one step, one undo, one redo.
+  scope_s5_two_roots: {
+    docs: one(), roots: ['A', 'B'], ums: [umr(['A', 'B'])],
+    steps: [...S5_STEPS, tx(0, 'o', ins('A', 1, 'X'), del('B', 0, 1)), undo(0), redo(0), undo(0)],
+  },
+  scope_s5b_two_roots_deletions: {
+    docs: one(), roots: ['A', 'B'], ums: [umr(['A', 'B'])],
+    steps: [...S5_STEPS, tx(0, 'o', del('A', 0, 1), del('B', 0, 1)), undo(0), redo(0), undo(0)],
+  },
+  scope_s5c_two_roots_insertions: {
+    docs: one(), roots: ['A', 'B'], ums: [umr(['A', 'B'])],
+    steps: [...S5_STEPS, tx(0, 'o', ins('A', 1, 'X'), ins('B', 1, 'Y')), undo(0), redo(0), undo(0)],
+  },
+  // The order of the scope and a root named twice change nothing (addToScope keeps a set).
+  scope_order_and_duplicates: {
+    docs: one(), roots: ['A', 'B'], ums: [umr(['B', 'A', 'B'])],
+    steps: [...S5_STEPS, tx(0, 'o', ins('A', 1, 'X'), del('B', 0, 1)), undo(0), redo(0)],
+  },
+  // A root of the scope the step does not touch, and a third root outside the scope.
+  scope_untouched_and_outside_roots: {
+    docs: one(), roots: ['A', 'B', 'C'], ums: [umr(['A', 'B'])],
+    steps: [tx(0, null, ins('A', 0, 'aa'), ins('C', 0, 'cc')), tx(0, 'o', ins('A', 1, 'X'), del('C', 0, 1)), undo(0),
+      tx(0, 'o', ins('C', 0, 'Z')), undo(0), redo(0)],
+  },
+  // Enter in the middle of a block: the tail moves from A into an empty B, and back on undo.
+  scope_split_moves_text_to_second_root: {
+    docs: one(), roots: ['A', 'B'], ums: [umr(['A', 'B'])],
+    steps: [tx(0, null, ins('A', 0, 'hello world')), tx(0, 'o', del('A', 5, 6), ins('B', 0, ' world')), undo(0), redo(0),
+      undo(0)],
+  },
+  // Backspace at the start of B: its text is appended to A and B is emptied.
+  scope_merge_moves_text_to_first_root: {
+    docs: one(), roots: ['A', 'B'], ums: [umr(['A', 'B'])],
+    steps: [tx(0, null, ins('A', 0, 'ab'), ins('B', 0, 'cd', { bold: true })),
+      tx(0, 'o', ins('A', 2, 'cd', { bold: true }), del('B', 0, 2)), undo(0), redo(0), undo(0)],
+  },
+  // The sheets-api shape: a browser (Yjs peer) splits and later merges two blocks, the server
+  // applies each change under a tracked origin through a fresh manager over both roots, undoes it
+  // once and redoes it once (PageTextHistoryReplay.derive), and the browser receives the result.
+  scope_server_split_then_merge: {
+    docs: [peer(1), server], roots: ['A', 'B'], ums: [late(umr(['A', 'B'], 0, 1)), late(umr(['B', 'A'], 0, 1))],
+    steps: [tx(0, 'b', ins('A', 0, 'hello world')), sync(0, 1), newum(0), tx(0, 'b', del('A', 5, 6), ins('B', 0, ' world')),
+      sync(0, 1, 'o'), undo(0), redo(0), sync(1, 0), newum(1), tx(0, 'b', ins('A', 5, ' world'), del('B', 0, 6)),
+      sync(0, 1, 'o'), undo(1), redo(1), undo(1), sync(1, 0)],
+  },
+  // An untracked edit lands in one root of the scope between tracked steps (and inside a merged
+  // step): undo leaves it alone and re-creates around it.
+  scope_untracked_edit_in_scope_root: {
+    docs: one(), roots: ['A', 'B'], ums: [umr(['A', 'B'])],
+    steps: [...S5_STEPS, tx(0, 'o', ins('A', 1, 'X'), del('B', 1, 1)), tx(0, 'x', ins('B', 0, 'yy'), ins('A', 0, 'q')),
+      tx(0, 'o', del('B', 0, 2), ins('A', 3, 'Z')), tx(0, 'x', del('A', 0, 1)), undo(0), undo(0), redo(0), redo(0)],
+  },
+  scope_untracked_edit_inside_merged_step: {
+    docs: one(), roots: ['A', 'B'], ums: [umr(['A', 'B'], LONG_TIMEOUT)],
+    steps: [...S5_STEPS, tx(0, 'o', ins('A', 1, 'X')), tx(0, 'x', ins('B', 1, 'yy')), tx(0, 'o', del('B', 0, 2)),
+      tx(0, 'o', ins('A', 0, 'W'), ins('B', 0, 'V')), undo(0), redo(0)],
+  },
+  // A tracked update that also changes a root outside the scope (the sheets-api "unknown root"):
+  // with the root in the scope the whole transaction is inverted, without it only the scope.
+  scope_tracked_update_with_extra_root: {
+    docs: [peer(1), server], roots: ['A', 'H'], ums: [late(umr(['A', 'H'], 0, 1)), late(umr(['A'], 0, 1))],
+    steps: [tx(0, 'b', ins('A', 0, 'ab'), ins('H', 0, 'hidden')), sync(0, 1), newum(0), newum(1),
+      tx(0, 'b', ins('A', 1, 'X'), del('H', 1, 5)), sync(0, 1, 'o'), undo(1), undo(0), redo(0), redo(1)],
+  },
+  // A concurrent remote edit next to a tracked change in the other root of the scope.
+  scope_remote_edit_in_scope_root: {
+    docs: [...one(1), ...one(2)], roots: ['A', 'B'], ums: [umr(['A', 'B'])],
+    steps: [...S5_STEPS, sync(0, 1), tx(0, 'o', ins('A', 1, 'X'), del('B', 0, 1)), sync(0, 1), tx(1, null, ins('B', 1, 'R')),
+      sync(1, 0), undo(0), sync(0, 1), redo(0), undo(0)],
+  },
+  // Types nested in two roots of the scope (from a Yjs peer): a step that changes only nested
+  // types is captured, a nested change under a root outside the scope is not, and deleting the
+  // embedded types in both roots is undone with their children re-created in the copies.
+  scope_nested_types_in_two_roots: {
+    docs: [peer(1), server], roots: ['t', 'u', 'v'], ums: [umr(['t', 'u'], 0, 1)], nodelta: true,
+    steps: [tx(0, 'b', ins('t', 0, 'ab'), etIn('t', 1, 'map'), ins('u', 0, 'cd'), etIn('u', 1, 'array'), etIn('v', 0, 'map')),
+      tx(0, 'b', nsetIn('t', 0, 'k', 'v1'), npushIn('u', 0, 'x'), npushIn('u', 0, 'map')), sync(0, 1),
+      tx(0, 'b', nsetIn('v', 0, 'k', 'w')), sync(0, 1, 'o'),
+      tx(0, 'b', nsetIn('t', 0, 'k', 'v2'), nsetIn('u', 0, 'deep', 1, [1])), sync(0, 1, 'o'), undo(0), redo(0),
+      tx(0, 'b', del('t', 1, 1), del('u', 1, 1)), sync(0, 1, 'o'), undo(0), redo(0), undo(0)],
+  },
+}
+
+// Seeds whose recording hits a YText gap outside undo/redo: after a remote transaction Yjs deletes
+// the formatting it made redundant (cleanupYTextAfterTransaction, a follow-up update of its own),
+// which YSwift does not port. The --server --singlekey seeds of the single-root corpus hit it too.
+const TEXT_CLEANUP_GAP = new Set(['mrsksrv_21'])
+
+export function suite(scenarios) {
+  return { meta: { yjsVersion: YJS_VERSION, format: 'v1', generatedBy: 'undo-fuzz.mjs' }, scenarios }
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const arg = (name, dflt) => {
+    const i = process.argv.indexOf(name)
+    return i < 0 ? dflt : process.argv[i + 1]
+  }
+  const from = Number(arg('--from', '1'))
+  const count = Number(arg('--count', '200'))
+  const out = arg('--out', 'undo_fuzz_v13_6_31.json')
+  if (process.argv.includes('--noformat')) setNoFormat(true)
+  if (process.argv.includes('--server')) setServerOnly(true)
+  if (process.argv.includes('--singlekey')) setSingleKey(true)
+  if (process.argv.includes('--multiroot')) setMultiRoot(true)
+  const scenarios = []
+  if (process.argv.includes('--suite')) {
+    // The committed regression corpus. Minimised repros and the audit scenarios first, one per
+    // undo/redo divergence of YSwift 0.4.0 (see REPROS and AUDIT above), then the merged map entry
+    // scenarios (MERGED_ENTRY), then the transaction cleanup scenarios (CLEANUP), then the multi-root
+    // scope scenarios (SCOPE), then seeded scenarios.
+    const named = [...Object.entries(REPROS), ...Object.entries(AUDIT), ...Object.entries(MERGED_ENTRY),
+      ...Object.entries(CLEANUP), ...Object.entries(SCOPE)]
+    for (const [name, spec] of named) {
+      const config = { seed: 0, docs: spec.docs, roots: spec.roots, ums: spec.ums, ...(spec.nodelta ? { nodelta: true } : {}) }
+      scenarios.push(record(name, config, spec.steps))
+    }
+    setNoFormat(true)
+    for (let seed = 1; seed <= 80; seed++) scenarios.push(scenario(seed))
+    setServerOnly(true)
+    for (let seed = 1; seed <= 60; seed++) scenarios.push(scenario(seed))
+    // Formatted sheets-api shapes (typing with attributes, PageHydration reseeds), one key per set.
+    setNoFormat(false)
+    setSingleKey(true)
+    for (let seed = 1; seed <= 60; seed++) scenarios.push(scenario(seed))
+    // Nested types with out-of-order delivery: two seeds that crashed YSwift in the cleanup.
+    for (const seed of [101860, 102498]) scenarios.push(nestedScenario(seed))
+    // Multi-root scopes: random subsets of the roots, and the server template with one manager
+    // over every root.
+    setMultiRoot(true)
+    setSingleKey(false)
+    setNoFormat(true)
+    setServerOnly(false)
+    for (let seed = 1; seed <= 80; seed++) scenarios.push(scenario(seed))
+    setServerOnly(true)
+    for (let seed = 1; seed <= 40; seed++) scenarios.push(scenario(seed))
+    setNoFormat(false)
+    setSingleKey(true)
+    for (let seed = 1; seed <= 40; seed++) {
+      const recorded = scenario(seed)
+      if (!TEXT_CLEANUP_GAP.has(recorded.name)) scenarios.push(recorded)
+    }
+  } else {
+    const make = process.argv.includes('--nested') ? nestedScenario : scenario
+    for (let seed = from; seed < from + count; seed++) scenarios.push(make(seed))
+  }
+  writeFileSync(out, JSON.stringify(suite(scenarios)))
+  const steps = scenarios.reduce((n, s) => n + s.steps.length, 0)
+  console.log(`wrote ${scenarios.length} scenarios (${steps} steps) to ${out}`)
+}

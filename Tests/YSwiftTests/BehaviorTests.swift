@@ -43,6 +43,29 @@ struct EngineBehaviorTests {
         #expect(doc.transact { txn in text.string(txn) } == "x")
     }
 
+    @Test("UndoManager over several texts undoes a change to all of them in one update")
+    func undoAcrossTexts() {
+        let doc = YDoc(clientID: 1)
+        let first = doc.text("first")
+        let second = doc.text("second")
+        doc.transact { txn in first.insert(txn, at: 0, "hello world") }
+        let undo = YSwift.UndoManager([first, second], trackedOrigins: ["user"])
+        let updates = Mutex(0)
+        let subscription = doc.onUpdate { _, _ in updates.withLock { $0 += 1 } }
+        defer { subscription.cancel() }
+
+        // A split moves the tail of one text into the other.
+        doc.transact(origin: "user") { txn in
+            first.delete(txn, at: 5, length: 6)
+            second.insert(txn, at: 0, " world")
+        }
+        undo.undo()
+        #expect(doc.transact { txn in [first.string(txn), second.string(txn)] } == ["hello world", ""])
+        undo.redo()
+        #expect(doc.transact { txn in [first.string(txn), second.string(txn)] } == ["hello", " world"])
+        #expect(updates.withLock { $0 } == 3)
+    }
+
     @Test("Awareness syncs local state between peers")
     func awarenessSync() {
         let docA = YDoc(clientID: 1)
@@ -60,6 +83,36 @@ struct EngineBehaviorTests {
         let states = awB.states()
         #expect(states[docA.clientID]?["name"] == .string("Alice"))
         #expect(states[docA.clientID]?["color"] == .string("#f00"))
+    }
+
+    @Test("Awareness ignores an update whose clock no JS number holds exactly")
+    func awarenessRejectsUnsafeClocks() {
+        func update(client: UInt64, clock: UInt64, state: String) -> Data {
+            var bytes: [UInt8] = [1]
+            for var value in [client, clock] {
+                while value > 0x7F {
+                    bytes.append(UInt8(value & 0x7F) | 0x80)
+                    value >>= 7
+                }
+                bytes.append(UInt8(value))
+            }
+            bytes.append(UInt8(state.utf8.count))
+            return Data(bytes + Array(state.utf8))
+        }
+        let doc = YDoc(clientID: 2)
+        let awareness = Awareness(doc)
+        awareness.setLocalStateField("x", 1)
+        // lib0 fails to read these; they used to stop the process on the conversion to Int, or on the
+        // clock bump a remote null state gets for the local client.
+        awareness.applyUpdate(update(client: 5, clock: .max, state: "{}"))
+        awareness.applyUpdate(update(client: 2, clock: 1 << 53, state: "null"))
+        #expect(awareness.states()[5] == nil)
+        #expect(awareness.states()[2]?["x"] == .int(1))
+        // The largest safe clock is still adopted, and a later null bumps it without overflow.
+        awareness.applyUpdate(update(client: 6, clock: (1 << 53) - 1, state: "{}"))
+        awareness.applyUpdate(update(client: 2, clock: (1 << 53) - 1, state: "null"))
+        #expect(awareness.states()[6] != nil)
+        #expect(awareness.states()[2]?["x"] == .int(1))
     }
 
     @Test("Awareness onChange reports newly-added clients")

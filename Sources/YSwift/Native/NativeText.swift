@@ -228,7 +228,7 @@ final class NativeText {
     // MARK: Insert
 
     private func insertText(_ pos: TextPosition, text: [UInt16], attributes: [String: String]) {
-        self.insertContent(pos, content: .string(text), attributes: attributes)
+        self.insertContent(pos, content: .string(text[...]), attributes: attributes)
     }
 
     /// The shared body of every insertion: text and embeds differ only in the content they carry.
@@ -330,7 +330,7 @@ final class NativeText {
         }
         if length > 0 {
             let newlines = [UInt16](repeating: 0x0A, count: length)
-            let item = self.makeItem(pos, content: .string(newlines))
+            let item = self.makeItem(pos, content: .string(newlines[...]))
             pos.right = item
             pos.forward()
         }
@@ -588,7 +588,10 @@ final class NativeText {
         switch any {
         case .null, .undefined: .null
         case .bool(let flag): .bool(flag)
-        case .number(let number): number == number.rounded(.towardZero) ? .int(Int64(number)) : .double(number)
+        case .number(let number):
+            // An integral value beyond JS's safe integers (or infinite) has no Int64 to become.
+            number == number.rounded(.towardZero) && abs(number) < 9_007_199_254_740_992
+                ? .int(Int64(number)) : .double(number)
         case .bigInt(let number): .int(number)
         case .string(let text): .string(text)
         case .bytes(let bytes): .data(Data(bytes))

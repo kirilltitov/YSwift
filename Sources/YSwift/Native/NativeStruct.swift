@@ -23,15 +23,16 @@ func sameID(_ lhs: YID?, _ rhs: YID?) -> Bool {
 }
 
 /// The integrated payload of an `Item`. Mirrors yjs `Content*` classes; only the
-/// fields needed to converge and to render text are modelled. Text is `[UInt16]`
-/// so offsets match JS string (UTF-16) semantics exactly.
+/// fields needed to converge and to render text are modelled. Text is UTF-16 code units
+/// so offsets match JS string semantics exactly. Runs are held as slices so that splitting
+/// a long one does not copy all of it (see `splice`).
 enum Content {
-    case string([UInt16])  // ContentString
+    case string(ArraySlice<UInt16>)  // ContentString
     case format(key: String, valueJSON: String)  // ContentFormat (raw JSON value)
     case embed(json: String)  // ContentEmbed (raw JSON)
     case deleted(UInt64)  // ContentDeleted
-    case any([Lib0Any])  // ContentAny
-    case json([String])  // ContentJSON (raw element strings)
+    case any(ArraySlice<Lib0Any>)  // ContentAny
+    case json(ArraySlice<String>)  // ContentJSON (raw element strings)
     case binary([UInt8])  // ContentBinary
     case type(YTypeImpl, typeRef: UInt64, name: String?)  // ContentType
     case doc(guid: String, options: Lib0Any)  // ContentDoc
@@ -61,32 +62,47 @@ enum Content {
     mutating func splice(_ offset: Int) -> Content {
         switch self {
         case .string(var units):
-            var right = Array(units[offset...])
-            units.removeSubrange(offset...)
+            self = .deleted(0)
+            var (left, right) = Self.split(&units, at: offset)
             // yjs replaces a split surrogate pair with U+FFFD on both halves.
-            if offset > 0, offset <= units.count {
-                let last = units[offset - 1]
-                if last >= 0xD800, last <= 0xDBFF {
-                    units[offset - 1] = 0xFFFD
-                    if !right.isEmpty { right[0] = 0xFFFD }
-                }
+            if let last = left.last, last >= 0xD800, last <= 0xDBFF {
+                left[left.index(before: left.endIndex)] = 0xFFFD
+                if !right.isEmpty { right[right.startIndex] = 0xFFFD }
             }
-            self = .string(units)
+            self = .string(left)
             return .string(right)
         case .deleted(let count):
             self = .deleted(UInt64(offset))
             return .deleted(count - UInt64(offset))
-        case .any(let items):
-            let right = Array(items[offset...])
-            self = .any(Array(items[..<offset]))
+        case .any(var items):
+            self = .deleted(0)
+            let (left, right) = Self.split(&items, at: offset)
+            self = .any(left)
             return .any(right)
-        case .json(let items):
-            let right = Array(items[offset...])
-            self = .json(Array(items[..<offset]))
+        case .json(var items):
+            self = .deleted(0)
+            let (left, right) = Self.split(&items, at: offset)
+            self = .json(left)
             return .json(right)
         case .format, .embed, .binary, .type, .doc:
             preconditionFailure("splice() called on non-splittable content")
         }
+    }
+
+    /// Splits `elements` after `offset` of them, leaving it empty. The smaller half is copied out
+    /// and the larger one keeps the storage, alone: a split costs at most the smaller half however
+    /// long the run, and neither half holds on to much more storage than it uses.
+    private static func split<Element>(
+        _ elements: inout ArraySlice<Element>,
+        at offset: Int,
+    ) -> (left: ArraySlice<Element>, right: ArraySlice<Element>) {
+        let split = elements.startIndex + offset
+        let halves =
+            offset <= elements.count - offset
+            ? (Array(elements[..<split])[...], elements[split...])
+            : (elements[..<split], Array(elements[split...])[...])
+        elements = []
+        return halves
     }
 
     /// Content type tag written into the low 5 bits of an item's info byte
@@ -105,21 +121,38 @@ enum Content {
         }
     }
 
-    /// Whether `other` is the same content kind (for merge eligibility).
-    func sameKind(as other: Content) -> Bool { self.ref == other.ref }
-
-    /// Appends `other`'s payload to `self` if the kind supports it
-    /// (`AbstractContent.mergeWith`). Only string/deleted/any/json merge.
-    mutating func mergeWith(_ other: Content) -> Bool {
+    /// Whether `mergeWith(other)` appends `other` (`AbstractContent.mergeWith`): only string, deleted,
+    /// any and json content merge, each with its own kind.
+    func canMerge(with other: Content) -> Bool {
         switch (self, other) {
-        case (.string(let lhs), .string(let rhs)):
-            self = .string(lhs + rhs)
-        case (.deleted(let lhs), .deleted(let rhs)):
+        case (.string, .string), (.deleted, .deleted), (.any, .any), (.json, .json): true
+        default: false
+        }
+    }
+
+    /// Appends `other`'s payload to `self` if the kind supports it (`AbstractContent.mergeWith`). The
+    /// payload grows in place, so merging a run of n structs into its first one copies each once.
+    mutating func mergeWith(_ other: Content) -> Bool {
+        // `self` is emptied before appending so that the payload is not shared while it grows.
+        switch other {
+        case .string(let rhs):
+            guard case .string(var lhs) = self else { return false }
+            self = .deleted(0)
+            lhs.append(contentsOf: rhs)
+            self = .string(lhs)
+        case .deleted(let rhs):
+            guard case .deleted(let lhs) = self else { return false }
             self = .deleted(lhs + rhs)
-        case (.any(let lhs), .any(let rhs)):
-            self = .any(lhs + rhs)
-        case (.json(let lhs), .json(let rhs)):
-            self = .json(lhs + rhs)
+        case .any(let rhs):
+            guard case .any(var lhs) = self else { return false }
+            self = .deleted(0)
+            lhs.append(contentsOf: rhs)
+            self = .any(lhs)
+        case .json(let rhs):
+            guard case .json(var lhs) = self else { return false }
+            self = .deleted(0)
+            lhs.append(contentsOf: rhs)
+            self = .json(lhs)
         default:
             return false
         }
@@ -131,16 +164,15 @@ enum Content {
     func write(into encoder: inout Lib0Encoder, offset: Int) {
         switch self {
         case .string(let units):
-            let slice = offset == 0 ? units : Array(units[offset...])
-            encoder.writeVarString(String(decoding: slice, as: UTF16.self))
+            encoder.writeVarString(String(decoding: units.dropFirst(offset), as: UTF16.self))
         case .deleted(let count):
             encoder.writeVarUint(count - UInt64(offset))
         case .any(let items):
             encoder.writeVarUint(UInt64(items.count - offset))
-            for index in offset..<items.count { encoder.writeAny(items[index]) }
+            for item in items.dropFirst(offset) { encoder.writeAny(item) }
         case .json(let items):
             encoder.writeVarUint(UInt64(items.count - offset))
-            for index in offset..<items.count { encoder.writeVarString(items[index]) }
+            for item in items.dropFirst(offset) { encoder.writeVarString(item) }
         case .binary(let bytes):
             encoder.writeVarUint8Array(bytes)
         case .embed(let json):
@@ -171,8 +203,9 @@ class Struct {
     }
 
     /// Returns the client whose data must arrive before this struct can integrate,
-    /// or nil once all dependencies are present (resolving links as a side effect).
-    func getMissing(_ store: NativeStore) -> UInt64? { nil }
+    /// or nil once all dependencies are present (resolving links as a side effect). Throws
+    /// `YError.invalidUpdate` for a reference to its own client that is not present.
+    func getMissing(_ store: NativeStore) throws -> UInt64? { nil }
 
     /// Integrates this struct into `store`. Base behaviour (used by GC) just trims
     /// by `offset` and appends.
@@ -193,6 +226,9 @@ class Struct {
     /// Whether this struct counts as deleted for merge/delete-set purposes.
     var isDeleted: Bool { false }
 
+    /// Whether `mergeWith(right)` absorbs `right`, without changing either.
+    func canMerge(with right: Struct) -> Bool { false }
+
     /// Absorbs the adjacent right-hand struct if compatible (`AbstractStruct.mergeWith`).
     func mergeWith(_ right: Struct) -> Bool { false }
 }
@@ -201,8 +237,12 @@ class Struct {
 final class GCStruct: Struct {
     override var isDeleted: Bool { true }
 
+    override func canMerge(with right: Struct) -> Bool {
+        right is GCStruct && self.id.clock + self.length == right.id.clock
+    }
+
     override func mergeWith(_ right: Struct) -> Bool {
-        guard right is GCStruct, self.id.clock + self.length == right.id.clock else { return false }
+        guard self.canMerge(with: right) else { return false }
         self.length += right.length
         return true
     }
@@ -262,7 +302,7 @@ final class Item: Struct {
         self.length == 1 ? self.id : YID(client: self.id.client, clock: self.id.clock + self.length - 1)
     }
 
-    override func getMissing(_ store: NativeStore) -> UInt64? {
+    override func getMissing(_ store: NativeStore) throws -> UInt64? {
         if let origin, origin.client != self.id.client, origin.clock >= store.getState(origin.client) {
             return origin.client
         }
@@ -273,6 +313,22 @@ final class Item: Struct {
         }
         if let parentID, self.id.client != parentID.client, parentID.clock >= store.getState(parentID.client) {
             return parentID.client
+        }
+
+        // References to the item's own client are not waited for: they must already be present. Yjs
+        // resolves them unchecked, and its `findIndexSS` throws when a malformed update points at a
+        // clock the client has not reached.
+        // A reference to another client got here only once present. The caller integrates a client's
+        // structs in clock order, so its state has reached this item's clock: only a reference at or past
+        // it needs the lookup.
+        let client = self.id.client
+        let clock = self.id.clock
+        func unreached(_ id: YID?) -> Bool {
+            guard let id, id.client == client, id.clock >= clock else { return false }
+            return id.clock >= store.getState(client)
+        }
+        if unreached(self.origin) || unreached(self.rightOrigin) || unreached(self.parentID) {
+            throw YError.invalidUpdate
         }
 
         // All dependencies present — resolve the links.
@@ -392,6 +448,7 @@ final class Item: Struct {
         if let rightItem = self.right as? Item {
             rightItem.left = self
         } else if let parentSub {
+            if parent.map[parentSub] == nil { parent.mapKeys.append(parentSub) }
             parent.map[parentSub] = self
             if let leftItem = self.left as? Item { store.deleteItem(leftItem) }
         }
@@ -403,9 +460,16 @@ final class Item: Struct {
 
         if case .type(let type, _, _) = self.content {
             type.item = self  // ContentType.integrate
+            type.depth = parent.depth + 1
         }
         if case .format = self.content {
             parent.hasFormatting = true  // disables search markers (attribute-safe)
+        }
+        if case .deleted = self.content {
+            // ContentDeleted.integrate: the item arrives deleted and joins the transaction's delete
+            // set in integration order, which an UndoManager's redo order follows.
+            store.deleteLog?.append((self.id.client, self.id.clock, self.length))
+            self.markDeleted()
         }
 
         if (parent.item?.deleted ?? false) || (self.parentSub != nil && self.right != nil) {
@@ -455,20 +519,25 @@ final class Item: Struct {
 
     override var isDeleted: Bool { self.deleted }
 
-    /// Merges the adjacent right item into this one when they form a contiguous,
-    /// same-origin, same-content, same-deleted run (`Item.mergeWith`).
+    /// Whether this item and the adjacent right item form a contiguous, same-origin, same-content,
+    /// same-deleted run (the conditions of `Item.mergeWith`).
+    override func canMerge(with right: Struct) -> Bool {
+        guard let right = right as? Item else { return false }
+        return sameID(right.origin, self.lastId)
+            && self.right === right
+            && sameID(self.rightOrigin, right.rightOrigin)
+            && self.id.client == right.id.client
+            && self.id.clock + self.length == right.id.clock
+            && self.deleted == right.deleted
+            && self.redone == nil && right.redone == nil  // never merge across an undo/redo re-creation
+            && self.content.canMerge(with: right.content)
+    }
+
+    /// Merges the adjacent right item into this one when `canMerge(with:)` (`Item.mergeWith`).
     override func mergeWith(_ right: Struct) -> Bool {
-        guard let right = right as? Item,
-            sameID(right.origin, self.lastId),
-            self.right === right,
-            sameID(self.rightOrigin, right.rightOrigin),
-            self.id.client == right.id.client,
-            self.id.clock + self.length == right.id.clock,
-            self.deleted == right.deleted,
-            self.redone == nil, right.redone == nil,  // never merge across an undo/redo re-creation
-            self.content.sameKind(as: right.content),
-            self.content.mergeWith(right.content)
-        else { return false }
+        guard self.canMerge(with: right), let right = right as? Item, self.content.mergeWith(right.content) else {
+            return false
+        }
         if right.keep { self.setKeep(true) }
         self.right = right.right
         (right.right as? Item)?.left = self
@@ -484,9 +553,13 @@ final class Item: Struct {
 final class YTypeImpl {
     weak var start: Item?
     var map: [String: Item] = [:]
+    /// The keys of `map` in the order they were first set: the iteration order of the yjs `_map`.
+    var mapKeys: [String] = []
     var length: Int = 0
     weak var item: Item?
     let name: String?
+    /// How many types this one is nested in: 0 for a root.
+    var depth = 0
 
     /// Cached search marker (`findPosition` hint): `markerItem` starts at absolute
     /// index `markerIndex`, valid while `markerVersion == store.version`.

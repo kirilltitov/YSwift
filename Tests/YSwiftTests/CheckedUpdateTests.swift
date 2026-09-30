@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 
 @testable import YSwift
@@ -135,6 +136,262 @@ struct CheckedUpdateTests {
         }
     }
 
+    private struct MalformedReferences: Decodable {
+        struct Case: Decodable {
+            let name: String
+            let updates: [String]
+            let tracked: Int?
+            let gc: Bool?
+            let rejected: Int?
+            let yswiftRejects: Int?
+            let unlimited: Bool?
+            let keepGoing: Bool?
+            let rejectedAll: [Int]?
+            let together: Int?
+            let update: String?
+            let xml: String?
+        }
+        let malformed: [Case]
+    }
+
+    struct Replay: Sendable {
+        var rejected: Int?
+        var rejectedAll: [Int] = []
+        var error: YError?
+        var state: String
+        var xml = ""
+    }
+
+    /// Applies the updates to a fresh document one per transaction, as the fixture generator does, and
+    /// drops the document before returning. With `tracked`, an UndoManager on the root tracks the updates
+    /// from that index on and, once all are applied, undoes and redoes the last of them. `unlimited`
+    /// lifts the limit on nesting depth, to build deeper documents than remote updates may. With `keepGoing`,
+    /// the updates after a rejected one are applied too. With `together`, the updates from that index on are
+    /// applied in one transaction.
+    static func replay(
+        _ updates: [Data],
+        tracked: Int? = nil,
+        gc: Bool = true,
+        unlimited: Bool = false,
+        keepGoing: Bool = false,
+        together: Int? = nil,
+    ) -> Replay {
+        let target = YDoc(clientID: 999, gc: gc)
+        if unlimited { (target.engine as? NativeEngine)?.doc.store.nestingLimit = .max }
+        let origin = Origin("r")
+        let undoManager = tracked.map { _ in
+            UndoManager(target.text("content"), trackedOrigins: [origin], captureTimeout: .zero)
+        }
+        var rejectedAll: [Int] = []
+        for (index, update) in updates.enumerated() {
+            if let together, index >= together { break }
+            do {
+                let isTracked = tracked.map { index >= $0 } ?? false
+                try target.transact(origin: isTracked ? origin : nil) { try target.applyUpdateChecked($0, update) }
+            } catch {
+                guard keepGoing else { return Replay(rejected: index, error: error as? YError, state: "") }
+                rejectedAll.append(index)
+            }
+        }
+        if let together {
+            var index = together
+            do {
+                try target.transact { transaction in
+                    for update in updates[together...] {
+                        try target.applyUpdateChecked(transaction, update)
+                        index += 1
+                    }
+                }
+            } catch {
+                return Replay(rejected: min(index, updates.count - 1), error: error as? YError, state: "")
+            }
+        }
+        undoManager?.undo()
+        undoManager?.redo()
+        return target.transact { transaction in
+            Replay(
+                rejectedAll: rejectedAll,
+                state: target.encodeStateAsUpdate(transaction).base64EncodedString(),
+                xml: target.xmlFragment("content").toString(transaction)
+            )
+        }
+    }
+
+    /// Runs `body` on a thread with the 512 KiB stack of a Swift concurrency worker, so that a recursion
+    /// as deep as the input overflows the same way wherever the suite runs. A body that runs for longer
+    /// than `seconds` or raises the peak resident size by more than `megabytes` ends the test process:
+    /// an input that makes the document loop fails the run instead of hanging it or exhausting memory.
+    static func onWorkerSizedStack<T: Sendable>(
+        _ label: String = "",
+        seconds: Double = 20,
+        megabytes: Int = 512,
+        _ body: @escaping @Sendable () -> T,
+    ) -> T {
+        let result = Mutex<T?>(nil)
+        let done = DispatchSemaphore(value: 0)
+        let thread = Thread {
+            let value = body()
+            result.withLock { $0 = value }
+            done.signal()
+        }
+        thread.stackSize = 512 * 1024
+        let peak = Self.peakResidentBytes()
+        let deadline = Date(timeIntervalSinceNow: seconds)
+        thread.start()
+        while done.wait(timeout: .now() + .milliseconds(20)) == .timedOut {
+            guard Date() < deadline, Self.peakResidentBytes() - peak < megabytes << 20 else {
+                print("\(label) did not finish within \(seconds) s and \(megabytes) MiB")
+                exit(EXIT_FAILURE)
+            }
+        }
+        return result.withLock { $0! }
+    }
+
+    private static func malformedFixtures() throws -> [MalformedReferences.Case] {
+        let url = try #require(
+            Bundle.module.url(forResource: "golden_v13_6_31", withExtension: "json", subdirectory: "Fixtures")
+        )
+        return try JSONDecoder().decode(MalformedReferences.self, from: Data(contentsOf: url)).malformed
+    }
+
+    @Test("references the document cannot resolve are rejected where yjs throws")
+    func rejectsUnresolvableReferencesAsYjs() throws {
+        for fixture in try Self.malformedFixtures() {
+            let updates = try fixture.updates.map { try #require(Data(base64Encoded: $0)) }
+            let tracked = fixture.tracked
+            let gc = fixture.gc ?? true
+            let unlimited = fixture.unlimited ?? false
+            let keepGoing = fixture.keepGoing ?? false
+            let together = fixture.together
+            let replay = Self.onWorkerSizedStack(fixture.name) {
+                Self.replay(
+                    updates,
+                    tracked: tracked,
+                    gc: gc,
+                    unlimited: unlimited,
+                    keepGoing: keepGoing,
+                    together: together,
+                )
+            }
+            #expect(replay.rejectedAll == fixture.rejectedAll ?? [], "\(fixture.name): rejected updates")
+            #expect(replay.rejected == fixture.yswiftRejects ?? fixture.rejected, "\(fixture.name): rejected update")
+            if replay.rejected != nil {
+                #expect(replay.error == .invalidUpdate, "\(fixture.name)")
+            }
+            if let xml = fixture.xml {
+                #expect(replay.xml == xml, "\(fixture.name): xml")
+            }
+            if let update = fixture.update, fixture.yswiftRejects == nil {
+                #expect(replay.state == update, "\(fixture.name): state")
+            }
+            // Whatever the document accepts, its own encoding loads again.
+            if replay.rejected == nil {
+                let state = try #require(Data(base64Encoded: replay.state))
+                let reload = Self.onWorkerSizedStack(fixture.name) {
+                    Self.replay([state], gc: gc, unlimited: unlimited)
+                }
+                #expect(reload.rejected == nil, "\(fixture.name): reloaded")
+            }
+        }
+    }
+
+    /// The peak resident size of this process, in bytes.
+    static func peakResidentBytes() -> Int {
+        #if os(Linux)
+        // `VmHWM:     1234 kB` in /proc/self/status.
+        let status = (try? String(contentsOfFile: "/proc/self/status", encoding: .utf8)) ?? ""
+        let line = status.split(separator: "\n").first { $0.hasPrefix("VmHWM:") } ?? ""
+        return (Int(line.split(separator: " ").dropFirst().first ?? "") ?? 0) * 1024
+        #else
+        var usage = rusage()
+        getrusage(RUSAGE_SELF, &usage)
+        return usage.ru_maxrss
+        #endif
+    }
+
+    @Test(
+        "long runs split or merged by an update take memory in proportion to the document",
+        arguments: ["long_string_split_by_deletes", "long_run_merged", "long_string_split_by_origins"]
+    )
+    func splitsAndMergesInBoundedMemory(name: String) async {
+        // In a process of its own, so that the peak belongs to this replay alone.
+        await #expect(processExitsWith: .success) { [name] in
+            guard let fixture = try? Self.malformedFixtures().first(where: { $0.name == name }) else { exit(2) }
+            let updates = fixture.updates.compactMap { Data(base64Encoded: $0) }
+            let before = Self.peakResidentBytes()
+            _ = Self.replay(updates)
+            exit(Self.peakResidentBytes() - before < 64 << 20 ? EXIT_SUCCESS : EXIT_FAILURE)
+        }
+    }
+
+    @Test(
+        "a text observer renders numbers too large for an integer as doubles",
+        arguments: [("huge_number_in_text", 1e300), ("infinity_in_text", -Double.infinity)]
+    )
+    func observesHugeNumbers(name: String, value: Double) throws {
+        let fixture = try #require(try Self.malformedFixtures().first { $0.name == name })
+        let update = try #require(Data(base64Encoded: fixture.updates[0]))
+        let target = self.doc(clientID: 999)
+        let deltas = Mutex<[[Delta]]>([])
+        let subscription = target.text("content").observe { event in deltas.withLock { $0.append(event.delta) } }
+        try target.transact { try target.applyUpdateChecked($0, update) }
+        subscription.cancel()
+        #expect(deltas.withLock { $0 } == [[.insert(.double(value), attributes: nil)]])
+        #expect(target.transact { target.encodeStateAsUpdate($0).base64EncodedString() } == fixture.update)
+    }
+
+    @Test("elements nested deeper than yjs renders are rendered without recursion")
+    func rendersDeeplyNestedElements() {
+        let depth = 10000
+        var bytes: [UInt8] = [1] + Self.varUint(UInt64(depth)) + [5, 0]
+        for level in 0..<depth {
+            bytes += [7] + (level == 0 ? [1] + Self.varString("content") : [0, 5] + Self.varUint(UInt64(level - 1)))
+            bytes += [3] + Self.varString("p")
+        }
+        let update = Data(bytes + [0])
+        let replay = Self.onWorkerSizedStack { Self.replay([update], unlimited: true) }
+        #expect(replay.rejected == nil)
+        #expect(replay.xml == String(repeating: "<p>", count: depth) + String(repeating: "</p>", count: depth))
+    }
+
+    @Test("undoing a step deep inside the scope takes time in proportion to the step")
+    func undoesDeepInsideTheScopeInLinearTime() throws {
+        let fixture = try #require(try Self.malformedFixtures().first { $0.name == "deep_scope_undone" })
+        let updates = try fixture.updates.map { try #require(Data(base64Encoded: $0)) }
+        let elapsed = ContinuousClock().measure { _ = Self.replay(updates, tracked: fixture.tracked, unlimited: true) }
+        // When every item's scope check climbed the 2000 levels on its own, this took seconds.
+        #expect(elapsed < .seconds(1), "\(elapsed)")
+    }
+
+    /// Where the elements of a run's payload start in memory.
+    private static func storage(of content: Content) -> UnsafeRawPointer? {
+        switch content {
+        case .string(let units): units.withUnsafeBufferPointer { UnsafeRawPointer($0.baseAddress) }
+        case .any(let items): items.withUnsafeBufferPointer { UnsafeRawPointer($0.baseAddress) }
+        case .json(let items): items.withUnsafeBufferPointer { UnsafeRawPointer($0.baseAddress) }
+        default: nil
+        }
+    }
+
+    @Test("splitting a run copies its smaller half and leaves the storage to the larger one")
+    func splitsCopyTheSmallerHalf() throws {
+        let runs: [(content: Content, stride: Int)] = [
+            (.string(.init(repeating: 0x78, count: 1000)), MemoryLayout<UInt16>.stride),
+            (.any(.init(repeating: .bool(false), count: 1000)), MemoryLayout<Lib0Any>.stride),
+            (.json(.init(repeating: "false", count: 1000)), MemoryLayout<String>.stride),
+        ]
+        for run in runs {
+            var content = run.content
+            let start = try #require(Self.storage(of: content))
+            let right = content.splice(10)
+            #expect(Self.storage(of: right) == start.advanced(by: 10 * run.stride), "\(content.ref): right")
+            var whole = run.content
+            let tail = whole.splice(990)
+            #expect(Self.storage(of: whole) == start, "\(content.ref): left")
+            #expect(tail.length == 10)
+        }
+    }
+
     private static func malformedUpdates() -> [(name: String, bytes: Data)] {
         var clientOverflow: [UInt8] = [1, 1]
         clientOverflow += Self.varUint((UInt64(1) << 53))
@@ -242,12 +499,12 @@ struct CheckedUpdateTests {
         return Data(bytes)
     }
 
-    private static func varString(_ value: String) -> [UInt8] {
+    static func varString(_ value: String) -> [UInt8] {
         let utf8 = Array(value.utf8)
         return Self.varUint(UInt64(utf8.count)) + utf8
     }
 
-    private static func varUint(_ value: UInt64) -> [UInt8] {
+    static func varUint(_ value: UInt64) -> [UInt8] {
         var value = value
         var bytes: [UInt8] = []
         repeat {

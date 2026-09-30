@@ -10,8 +10,9 @@ import Foundation
 ///
 /// Backed by the package's pure-Swift `NativeEngine` implementation.
 public final class YDoc: Sendable {
-    /// This client's unique id (Yjs 53-bit client id).
-    public let clientID: UInt64
+    /// This client's id (Yjs 53-bit client id). As in Yjs, a transaction that applies an update written
+    /// under this id, advancing it, gives the document a new random 32-bit id: another peer uses it.
+    public var clientID: UInt64 { self.engine.clientID }
 
     let engine: any YEngine
 
@@ -21,27 +22,22 @@ public final class YDoc: Sendable {
 
     /// Creates a document with a random 53-bit client id.
     public init(gc: Bool = true) {
-        let engine = makeDefaultEngine(clientID: nil, gc: gc)
-        self.engine = engine
-        self.clientID = engine.clientID
+        self.engine = makeDefaultEngine(clientID: nil, gc: gc)
     }
 
     /// Creates a document with an explicit client id.
     ///
     /// Yjs allows setting the client id directly; an explicit id makes encoding
-    /// deterministic (required for byte-exact conformance testing and useful for
-    /// stable server-assigned ids).
+    /// deterministic (required for byte-exact conformance testing). The id changes
+    /// when an applied update writes under it, as described at `clientID`.
     public init(clientID: UInt64, gc: Bool = true) {
-        let engine = makeDefaultEngine(clientID: clientID, gc: gc)
-        self.engine = engine
-        self.clientID = engine.clientID
+        self.engine = makeDefaultEngine(clientID: clientID, gc: gc)
     }
 
     /// Injects an engine through the internal seam. Public initializers always
     /// construct the native implementation through `makeDefaultEngine`.
     init(engine: any YEngine) {
         self.engine = engine
-        self.clientID = engine.clientID
     }
 
     /// Returns the top-level text type under `name` (analogue of Yjs `getText`).

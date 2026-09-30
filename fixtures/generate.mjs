@@ -166,21 +166,29 @@ function arrayFixture(name, description, clientID, ops) {
   }
 }
 
-function mapFixture(name, description, clientID, ops) {
+/** Map ops in one transaction, or with `oneTransactionEach` one transaction per op, recording the
+ *  update each transaction emits. */
+function mapFixture(name, description, clientID, ops, oneTransactionEach = false) {
   const doc = new Y.Doc()
   doc.clientID = clientID
+  const updates = []
+  doc.on('update', (u) => updates.push(b64(u)))
   const m = doc.getMap(KEY)
-  doc.transact(() => {
-    for (const o of ops) {
-      switch (o.op) {
-        case 'set': m.set(o.key, o.value); break
-        case 'delete': m.delete(o.key); break
-        default: throw new Error(`unknown map op: ${o.op}`)
-      }
+  const apply = (o) => {
+    switch (o.op) {
+      case 'set': m.set(o.key, o.value); break
+      case 'delete': m.delete(o.key); break
+      default: throw new Error(`unknown map op: ${o.op}`)
     }
-  })
+  }
+  if (oneTransactionEach) {
+    for (const o of ops) doc.transact(() => apply(o))
+  } else {
+    doc.transact(() => { for (const o of ops) apply(o) })
+  }
   return {
     name, description, clientID, ops,
+    ...(oneTransactionEach ? { updates } : {}),
     json: JSON.stringify(m.toJSON()),
     stateVector: b64(Y.encodeStateVector(doc)),
     update: b64(Y.encodeStateAsUpdate(doc)),
@@ -256,6 +264,16 @@ const map = [
     [{ op: 'set', key: 'k', value: 1 }, { op: 'set', key: 'k', value: 2 }]),
   mapFixture('map_delete', 'set two keys, delete one', 1001,
     [{ op: 'set', key: 'a', value: 1 }, { op: 'set', key: 'b', value: 2 }, { op: 'delete', key: 'a' }]),
+  // A merge that absorbs a key's current value makes the merged item the current value
+  // (tryToMergeWithLefts), so the next set links to it and merges again.
+  mapFixture('map_merged_value_stays_current', 'set/delete one key, one transaction per op', 1001,
+    [{ op: 'set', key: 'k', value: 1 }, { op: 'set', key: 'k', value: 2 }, { op: 'delete', key: 'k' },
+     { op: 'set', key: 'k', value: 3 }, { op: 'delete', key: 'k' }, { op: 'set', key: 'k', value: 4 }], true),
+  // Only a merge that absorbs the current value moves the key: overwritten values merge among
+  // themselves behind it.
+  mapFixture('map_overwritten_values_merge_behind_current', 'set one key four times, one transaction per op', 1001,
+    [{ op: 'set', key: 'k', value: 1 }, { op: 'set', key: 'k', value: 2 }, { op: 'set', key: 'k', value: 3 },
+     { op: 'set', key: 'k', value: 4 }], true),
 ]
 
 // --- Container convergence: concurrent multi-client edits must converge. ---
@@ -497,9 +515,299 @@ const semantic = [
   ),
 ]
 
+// --- Malformed references: hand-built v1 updates, applied to one document one per transaction. ---
+// Yjs resolves an item's references to its own client without checking them against the state, so
+// a reference to a clock that client has not reached makes the lookup throw. `rejected` is the
+// index of the update Yjs throws on (null when it accepts all); `update` is the state it ends with.
+
+const varUint = (n) => { const out = []; while (n > 127) { out.push(0x80 | (n & 127)); n = Math.floor(n / 128) } out.push(n); return out }
+const varString = (s) => { const bytes = [...Buffer.from(s, 'utf8')]; return [...varUint(bytes.length), ...bytes] }
+/** One client's structs from `clock` on, and an empty delete set. */
+const rawUpdate = (client, clock, structs) =>
+  b64(new Uint8Array([1, ...varUint(structs.length), ...varUint(client), ...varUint(clock), ...structs.flat(), 0]))
+const rootString = (text) => [0x04, 1, ...varString(KEY), ...varString(text)]
+const rootMapType = () => [0x07, 1, ...varString(KEY), 1]
+const rootAnyFalse = (count) => [0x08, 1, ...varString(KEY), ...varUint(count), ...new Array(count).fill(121)]
+/** Root any content holding one number too large for an integer. */
+const rootAnyNumber = (value) => {
+  const float64 = Buffer.alloc(8)
+  float64.writeDoubleBE(value)
+  return [0x08, 1, ...varString(KEY), 1, 123, ...float64]
+}
+/** Root any content holding one value given by its lib0 bytes. */
+const rootAnyBytes = (...bytes) => [0x08, 1, ...varString(KEY), 1, ...bytes]
+const stringAfter = (client, clock, text) => [0x84, ...varUint(client), ...varUint(clock), ...varString(text)]
+const stringBefore = (client, clock, text) => [0x44, ...varUint(client), ...varUint(clock), ...varString(text)]
+const embedAfter = (client, clock, json) => [0x85, ...varUint(client), ...varUint(clock), ...varString(json)]
+const mapEntryIn = (client, clock, key) => [0x28, 0, ...varUint(client), ...varUint(clock), ...varString(key), 1, 125, 1]
+const rootListType = () => [0x07, 1, ...varString(KEY), 0]
+const gcStruct = (length) => [0x00, ...varUint(length)]
+/** A string, the first element of the list type at `clock` of `client`. */
+const stringIn = (client, clock, text) => [0x04, 0, ...varUint(client), ...varUint(clock), ...varString(text)]
+/** `count` numbers 1, 2, … as entry `key` of the map type at `clock` of `client`. */
+const numbersIn = (client, clock, key, count) =>
+  [0x28, 0, ...varUint(client), ...varUint(clock), ...varString(key), count, ...range(count, (i) => [125, i + 1]).flat()]
+/** A number `value` right after the item at `clock` of `client`. */
+const numberAfter = (client, clock, value) => [0x88, ...varUint(client), ...varUint(clock), 1, 125, value]
+/** One client's structs from `clock` on, and a delete set of `ranges` of `deleted`. */
+const rawUpdateDeleting = (client, clock, structs, deleted, ranges) => b64(new Uint8Array([
+  1, ...varUint(structs.length), ...varUint(client), ...varUint(clock), ...structs.flat(), 1, ...varUint(deleted),
+  ...varUint(ranges.length), ...ranges.flatMap(([at, length]) => [...varUint(at), ...varUint(length)]),
+]))
+/** Deleted content of `length` clocks, an entry `key` of the type at `parent` (a client and a clock). */
+const deletedEntryIn = (client, clock, key, length) =>
+  [0x21, 0, ...varUint(client), ...varUint(clock), ...varString(key), ...varUint(length)]
+/** An update without structs, deleting `ranges` ([clock, length] pairs) of one client. */
+const deleteRanges = (client, ranges) => b64(new Uint8Array([
+  0, 1, ...varUint(client), ...varUint(ranges.length), ...ranges.flatMap(([clock, length]) => [...varUint(clock), ...varUint(length)]),
+]))
+/** Lists nested `depth` deep, level j by client 1000 + j, and an update deleting them innermost first:
+ *  undoing it re-creates the innermost first, which re-creates every level above it first. */
+const nestedAcrossClients = (depth) => {
+  const levels = range(depth, (i) => depth - 1 - i)
+  return [
+    b64(new Uint8Array([...varUint(depth), ...levels.flatMap((j) => [
+      1, ...varUint(1000 + j), 0, 0x07, ...(j === 0 ? [1, ...varString(KEY)] : [0, ...varUint(999 + j), 0]), 0,
+    ]), 0])),
+    b64(new Uint8Array([0, ...varUint(depth), ...levels.flatMap((j) => [...varUint(1000 + j), 1, 0, 1])])),
+  ]
+}
+/** `depth` nested lists (client 5) with a string of 2 × `count` units (client 6) in the innermost, and
+ *  an update deleting every other unit of it. */
+const deepScope = (depth, count) => [
+  b64(new Uint8Array([
+    2, 1, 6, 0, 0x04, 0, 5, ...varUint(depth - 1), ...varString('x'.repeat(2 * count)),
+    ...varUint(depth), 5, 0, ...range(depth, (k) => [0x07, ...(k === 0 ? [1, ...varString(KEY)] : [0, 5, ...varUint(k - 1)]), 0]).flat(),
+    0,
+  ])),
+  deleteRanges(6, range(count, (i) => [2 * i, 1])),
+]
+/** `depth` XML elements `p` of client 5, each a child of the one before. */
+const nestedElements = (depth) => rawUpdate(5, 0, range(depth, (k) => [
+  0x07, ...(k === 0 ? [1, ...varString(KEY)] : [0, 5, ...varUint(k - 1)]), 3, ...varString('p'),
+]))
+/** An update setting root map key `a` to a number, which replaces the key's current value. */
+const rootEntry = (client) => rawUpdate(client, 0, [[0x28, 1, ...varString(KEY), ...varString('a'), 1, 125, 1]])
+const range = (count, at) => Array.from({ length: count }, (_, index) => at(index))
+/** `depth` types of one client, each nested in the one before as map entry `a` (`map`) or list element. */
+const nestedChain = (client, depth, map) => rawUpdate(client, 0, Array.from({ length: depth }, (_, k) => [
+  0x07 | (map ? 0x20 : 0),
+  ...(k === 0 ? [1, ...varString(KEY)] : [0, ...varUint(client), ...varUint(k - 1)]),
+  ...(map ? varString('a') : []),
+  map ? 1 : 0,
+]))
+
+/** `depth` lists of client 2, each the root's own element by its parent, yet each linked into the list
+ *  before: every update resends the run from the client's last clock, a string of the root, and follows it
+ *  with the next list and a string in it. */
+const threadedLists = (depth) => {
+  const updates = [rawUpdate(2, 0, [[0x07, 1, ...varString(KEY), 0], stringIn(2, 0, 'a')])]
+  for (let level = 1, last = 1; level < depth; level++, last += 3) {
+    updates.push(rawUpdate(2, last, [rootString('xy'), [0x87, 2, ...varUint(last + 1), 0], stringIn(2, last + 2, 'a')]))
+  }
+  return updates
+}
+
+/** With `tracked`, an UndoManager on the root tracks the updates from that index on (origin `r`) and,
+ *  once all are applied, undoes and redoes the last of them. With `xml`, the root's XML string is
+ *  recorded too. `gc: false` replays into a document that keeps deleted content. YSwift rejects nesting
+ *  deeper than browsers can delete, which yjs accepts: `yswiftRejects` is the index of the update it
+ *  rejects on purpose, and `unlimited` replays with that limit lifted, for the deep documents that
+ *  check how YSwift handles depth. With `keepGoing`, the document takes the updates after a rejected
+ *  one too: `rejectedAll` lists every rejected index. With `together`, the updates from that index on
+ *  are applied in one transaction; `rejected` is then the one applied when yjs threw, the last if the
+ *  commit threw. */
+function malformedFixture(name, description, updates, {
+  tracked = null, xml = false, gc = true, yswiftRejects = null, unlimited = false, keepGoing = false, together = null,
+} = {}) {
+  const doc = new Y.Doc({ gc })
+  doc.clientID = 999
+  const um = tracked === null
+    ? null
+    : new Y.UndoManager(doc.getText(KEY), { trackedOrigins: new Set(['r']), captureTimeout: 0 })
+  let rejected = null
+  const rejectedAll = []
+  for (const [index, update] of updates.entries()) {
+    if (together !== null && index >= together) break
+    try {
+      Y.applyUpdate(doc, Buffer.from(update, 'base64'), um !== null && index >= tracked ? 'r' : null)
+    } catch {
+      rejectedAll.push(index)
+      if (keepGoing) continue
+      rejected = index
+      break
+    }
+  }
+  if (together !== null && rejected === null) {
+    let index = together
+    try {
+      doc.transact(() => {
+        for (; index < updates.length; index++) Y.applyUpdate(doc, Buffer.from(updates[index], 'base64'))
+      })
+    } catch {
+      rejected = Math.min(index, updates.length - 1)
+    }
+  }
+  if (um !== null && rejected === null) {
+    um.undo()
+    um.redo()
+  }
+  return {
+    name, description, updates, ...(tracked === null ? {} : { tracked }), ...(gc ? {} : { gc }),
+    ...(yswiftRejects === null ? {} : { yswiftRejects }), ...(unlimited ? { unlimited } : {}),
+    ...(keepGoing ? { keepGoing, rejectedAll } : {}), ...(together === null ? {} : { together }),
+    rejected, update: rejected === null ? b64(Y.encodeStateAsUpdate(doc)) : null,
+    ...(xml && rejected === null ? { xml: doc.getXmlFragment(KEY).toString() } : {}),
+  }
+}
+
+const malformed = [
+  malformedFixture('origin_own_client_future', 'left origin at a clock of its own client not reached yet', [
+    rawUpdate(5, 0, [rootString('a'), stringAfter(5, 10, 'b')])]),
+  malformedFixture('origin_own_client_future_in_later_update', 'the same, the item arriving in a later update', [
+    rawUpdate(5, 0, [rootString('a')]), rawUpdate(5, 1, [stringAfter(5, 10, 'b')])]),
+  malformedFixture('origin_own_client_future_past_a_run', 'left origin past a run the document holds', [
+    rawUpdate(5, 0, [rootString('a'), embedAfter(5, 0, '{"b":1}'), stringAfter(5, 1, 'bcdefghij')]),
+    rawUpdate(5, 11, [stringAfter(5, 13, 'x')])]),
+  // The bad item waits behind its client's item with a missing dependency, as the rest of that
+  // client's structs do; a later update for the same clocks does not expose it, the dependency does.
+  malformedFixture('origin_own_client_future_behind_a_missing_dependency', 'the same, set aside with a waiting item', [
+    rawUpdate(5, 0, [rootString('a')]), rawUpdate(5, 1, [stringAfter(6, 0, 'b'), stringAfter(5, 10, 'c')]),
+    rawUpdate(5, 1, [stringAfter(5, 0, 'b'), stringAfter(5, 1, 'c')]), rawUpdate(6, 0, [rootString('x')])]),
+  malformedFixture('origin_own_client_unknown', 'left origin at a client the document has never seen', [
+    rawUpdate(5, 0, [stringAfter(5, 3, 'a')])]),
+  malformedFixture('origin_self', 'left origin at the item itself', [rawUpdate(5, 0, [stringAfter(5, 0, 'a')])]),
+  malformedFixture('right_origin_own_client_future', 'right origin at a clock of its own client not reached yet', [
+    rawUpdate(5, 0, [rootString('a'), stringBefore(5, 10, 'b')])]),
+  malformedFixture('parent_own_client_future', 'parent at a clock of its own client not reached yet', [
+    rawUpdate(5, 0, [rootMapType(), mapEntryIn(5, 10, 'k')])]),
+  malformedFixture('parent_self', 'parent at the item itself', [rawUpdate(5, 0, [mapEntryIn(5, 0, 'k')])]),
+  // Accepted: the references resolve.
+  malformedFixture('origin_other_client', 'left origin at another client, present', [
+    rawUpdate(5, 0, [rootString('a')]), rawUpdate(6, 0, [stringAfter(5, 0, 'b')])]),
+  malformedFixture('origin_inside_resent_run', 'a run sent again with its left origin in the part already held', [
+    rawUpdate(5, 0, [rootString('abcdef')]), rawUpdate(5, 0, [stringAfter(5, 3, 'abcdefghij')])]),
+  malformedFixture('parent_not_a_type', 'parent at a string item: the item is collected', [
+    rawUpdate(5, 0, [rootString('ab'), mapEntryIn(5, 0, 'k')])]),
+  // A run sent again is linked in after the struct just before its first new clock, whatever that
+  // struct's parent. Here it is the map's own item, which the new entry then replaces and deletes:
+  // collecting the map walks from the entry back into the map without end, and yjs overflows its
+  // stack. Without gc nothing is collected and yjs accepts it.
+  malformedFixture('entry_resent_after_its_map_collected', 'a resent entry of a map linked after the map itself', [
+    rawUpdate(5, 0, [rootMapType()]), rawUpdate(5, 0, [deletedEntryIn(5, 0, 'l', 2)])]),
+  malformedFixture('entry_resent_after_its_map_kept', 'the same without gc', [
+    rawUpdate(5, 0, [rootMapType()]), rawUpdate(5, 0, [deletedEntryIn(5, 0, 'l', 2)])], { gc: false, yswiftRejects: 1 }),
+  // A run resent from its middle is linked in after the struct before its first new clock. Yjs reads that
+  // struct's right neighbour, which a GC struct does not have, and throws before changing anything.
+  ...[true, false].map((gc) => malformedFixture(`resent_run_after_wire_gc${gc ? '' : '_without_gc'}`,
+    'a run resent from its middle, after a GC struct sent as such', [
+      rawUpdate(5, 0, [gcStruct(2)]), rawUpdate(5, 1, [rootString('ab')])], { gc })),
+  ...[true, false].map((gc) => malformedFixture(`resent_run_after_collected_child${gc ? '' : '_without_gc'}`,
+    'the same after a child the document collected with its list (kept without gc)', [
+      rawUpdate(5, 0, [rootListType(), stringIn(5, 0, 'xy')]), deleteRanges(5, [[0, 1]]),
+      rawUpdate(5, 2, [rootString('abc')])], { gc, ...(gc ? {} : { yswiftRejects: 2 }) })),
+  // Yjs deletes only a map's current value with the map, yet collects the whole key chain, and throws on
+  // an item there that is not deleted: here the left half of a split value, and an item of another
+  // type linked into a list by a resent run. Without gc nothing is collected and yjs accepts them.
+  ...[true, false].flatMap((gc) => [
+    malformedFixture(`collected_map_keeps_live_split_half${gc ? '' : '_without_gc'}`,
+      'a map deleted after the right half of its value', [
+        rawUpdate(5, 0, [rootMapType(), numbersIn(5, 0, 'k', 2)]), deleteRanges(5, [[2, 1]]),
+        deleteRanges(5, [[0, 1]])], { gc }),
+    malformedFixture(`collected_map_keeps_half_split_by_insert${gc ? '' : '_without_gc'}`,
+      'a map deleted after an item split its value', [
+        rawUpdate(5, 0, [rootMapType(), numbersIn(5, 0, 'k', 2)]),
+        rawUpdateDeleting(6, 0, [numberAfter(5, 1, 3)], 5, [[0, 1]])], { gc }),
+    malformedFixture(`collected_list_reaches_foreign_item${gc ? '' : '_without_gc'}`,
+      'a list deleted with an item of the root linked into it', [
+        rawUpdate(5, 0, [rootListType(), stringIn(5, 0, 'xy')]), rawUpdate(5, 2, [stringAfter(6, 0, 'ab')]),
+        rawUpdateDeleting(6, 0, [rootString('z')], 5, [[0, 1]])], { gc, ...(gc ? {} : { yswiftRejects: 2 }) }),
+  ]),
+  // Yjs collects once, when the transaction ends, so a later update of the same transaction can delete the
+  // live half first; YSwift checks after each update whether its collection would fail, to reject that
+  // update, and rejects the first one even though the transaction as a whole collects.
+  malformedFixture('collected_map_keeps_live_split_half_until_the_same_transaction',
+    'a map deleted after the right half of its value, the left half deleted in the same transaction', [
+      rawUpdate(5, 0, [rootMapType(), numbersIn(5, 0, 'k', 2)]), deleteRanges(5, [[2, 1]]),
+      deleteRanges(5, [[0, 1]]), deleteRanges(5, [[1, 1]])], { together: 2, yswiftRejects: 2 }),
+  // A run resent from its middle whose earlier part lies under another parent or key: valid updates never
+  // carry one, as the part already held is the same struct. Yjs links it into that part's list anyway while
+  // it counts it in its own parent, so the lists no longer match the parents: a type whose parent is the
+  // root lies nested in another, as deep as updates thread it, and a text's length can drop below zero.
+  // Its own encoding then reloads into another document. YSwift rejects such a run, which yjs accepts.
+  ...[true, false].map((gc) => malformedFixture(`resent_run_under_another_parent${gc ? '' : '_without_gc'}`,
+    'lists nested through runs of the root resent after the list before', threadedLists(3), { gc, yswiftRejects: 1 })),
+  malformedFixture('resent_run_under_another_root', 'a run of one root resent after a run of another', [
+    rawUpdate(1, 0, [[0x04, 1, ...varString('b'), ...varString('x')]]),
+    rawUpdate(2, 0, [[0x04, 1, ...varString('c'), ...varString('aaa')]]), rawUpdate(2, 2, [stringAfter(1, 0, 'zzzz')]),
+    deleteRanges(2, [[0, 6]])], { yswiftRejects: 2 }),
+  // Structs waiting for missing clocks are kept merged into one update, as yjs keeps them, and retried
+  // once when a later update brings a clock they miss; a retry that throws drops them, and the update
+  // that set it off reports the error, while later updates apply.
+  malformedFixture('pending_retry_throws_then_later_updates_apply', 'a waiting item with a right origin never reached', [
+    rawUpdate(5, 0, [[0xc4, 6, 0, 5, 5, ...varString('a')]]), rawUpdate(6, 0, [rootString('b')]),
+    rawUpdate(8, 0, [rootString('c')]), rawUpdate(9, 0, [rootString('d')])], { keepGoing: true }),
+  // Merging the waiting structs slices a run the document partly holds and gives the rest an origin in
+  // the run itself, so it takes the run's parent. The order in which yjs integrates the merged structs,
+  // higher clients first, is the order an UndoManager redoes them in.
+  // Yjs's merge compares a GC struct and an item at one clock as each going first; V8's sort then puts
+  // the later update's item first, and the waiting GC struct is sliced away behind it.
+  malformedFixture('pending_gc_and_item_at_one_clock', 'a waiting GC struct and a waiting item at its clock', [
+    rawUpdate(5, 2, [gcStruct(2)]), rawUpdate(5, 2, [stringAfter(5, 1, 'xyz')]), rawUpdate(5, 0, [rootString('ab')])]),
+  malformedFixture('pending_merged_then_redone', 'two waiting items of two clients, integrated together, undone, redone', [
+    b64(Buffer.from('0101d19389d90400450c00077b2262223a327d00', 'hex')),
+    b64(Buffer.from('0101dfdddde00900440c0005697961626700', 'hex')), rawUpdate(12, 0, [rootMapType()]),
+  ], { tracked: 1 }),
+  // Size and depth: yjs accepts these; the document must survive them, and being dropped. The deep ones
+  // are replayed with YSwift's nesting limit lifted.
+  // Yjs renders nested elements recursively and throws from 1172 levels on; YSwift renders any depth.
+  malformedFixture('nested_elements', '1000 XML elements, each a child of the one before', [nestedElements(1000)],
+    { xml: true, unlimited: true }),
+  malformedFixture('huge_number_in_text', 'an any value 1e300 in the text, which observers render',
+    [rawUpdate(5, 0, [rootAnyNumber(1e300)])]),
+  malformedFixture('infinity_in_text', 'an any value -Infinity in the text, which observers render',
+    [rawUpdate(5, 0, [rootAnyNumber(-Infinity)])]),
+  // A number keeps its sign: -0 is written as a negative zero varint. lib0 also reads a zero varint with
+  // a needless continuation byte, which YSwift rejects on purpose. (Which NaN yjs writes back depends on
+  // the engine, even within V8, so NaNs are not recorded here.)
+  malformedFixture('any_negative_zero', 'an any value -0', [rawUpdate(5, 0, [rootAnyBytes(125, 0x40)])]),
+  malformedFixture('any_negative_zero_padded', 'an any value -0 as a varint with a needless byte', [
+    rawUpdate(5, 0, [rootAnyBytes(125, 0xc0, 0)])], { yswiftRejects: 0 }),
+  malformedFixture('nested_map_chain', '2000 maps, each an entry of the one before', [nestedChain(5, 2000, true)],
+    { unlimited: true }),
+  // Yjs deletes (and collects) a nested type recursively and throws a RangeError once the stack runs
+  // out: in browsers from 734 levels on (WebKit, in a worker), on Node's default stack from about 2200
+  // maps or 3750 lists. YSwift accepts 512 levels, the deletion included, and rejects a 513th, which
+  // yjs accepts.
+  malformedFixture('nested_list_chain_deleted', '512 nested lists, the outermost deleted', [
+    nestedChain(5, 512, false), deleteRanges(5, [[0, 1]])]),
+  malformedFixture('nested_map_chain_deleted', '512 nested maps, the outermost deleted', [
+    nestedChain(5, 512, true), deleteRanges(5, [[0, 1]])]),
+  malformedFixture('nested_map_chain_replaced', '512 nested maps, the outermost replaced', [
+    nestedChain(5, 512, true), rootEntry(6)]),
+  malformedFixture('nested_list_chain_past_the_limit', '513 nested lists', [nestedChain(5, 513, false)],
+    { yswiftRejects: 0 }),
+  malformedFixture('nested_map_chain_past_the_limit', '513 nested maps', [nestedChain(5, 513, true)],
+    { yswiftRejects: 0 }),
+  malformedFixture('nested_lists_redone_innermost_first', '2000 nested lists deleted innermost first, undone, redone',
+    nestedAcrossClients(2000), { tracked: 1, unlimited: true }),
+  malformedFixture('deep_scope_undone', '4000 units deleted 2000 lists deep in the scope, undone, redone',
+    deepScope(2000, 4000), { tracked: 1, unlimited: true }),
+  malformedFixture('surrogate_pairs_split', 'deletes splitting surrogate pairs near either end of a string', [
+    rawUpdate(5, 0, [rootString('\u{1F600}'.repeat(4))]), deleteRanges(5, [[1, 1], [6, 1]])]),
+  malformedFixture('long_string_split_by_deletes', 'a 40 000-unit string split by 4000 deleted ranges', [
+    rawUpdate(5, 0, [rootString('x'.repeat(40000))]), deleteRanges(5, range(4000, (i) => [i * 10 + 5, 1]))]),
+  malformedFixture('long_run_merged', '15 000 one-unit items typed one after another, merged into one', [
+    rawUpdate(5, 0, [rootString('x'), ...range(14999, (i) => stringAfter(5, i, 'x'))])]),
+  malformedFixture('any_run_split_by_origins', 'a run of 20 000 any values split by 2000 items, merged back', [
+    rawUpdate(5, 0, [rootAnyFalse(20000)]), rawUpdate(6, 0, range(2000, (i) => stringAfter(5, i * 10 + 5, 'y')))]),
+  malformedFixture('long_string_split_by_origins', 'a 40 000-unit string split by 4000 items, merged back', [
+    rawUpdate(5, 0, [rootString('x'.repeat(40000))]), rawUpdate(6, 0, range(4000, (i) => stringAfter(5, i * 10 + 5, 'y')))]),
+]
+
 const out = {
   meta: { yjsVersion: YJS_VERSION, format: 'v1', key: KEY, generatedBy: 'fixtures/generate.mjs' },
-  encode, merge, converge, diff, incremental, sticky, semantic, array, map, xml, containerConverge, fuzz,
+  encode, merge, converge, diff, incremental, sticky, semantic, array, map, xml, containerConverge, fuzz, malformed,
 }
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -510,4 +818,5 @@ writeFileSync(join(dest, 'golden_v13_6_31.json'), JSON.stringify(out, null, 2) +
 const count =
   encode.length + merge.length + converge.length + diff.length + incremental.length + sticky.length
   + semantic.length + array.length + map.length + xml.length + containerConverge.length + fuzz.length
+  + malformed.length
 console.log(`wrote ${count} fixtures (yjs ${YJS_VERSION}) -> Tests/YSwiftTests/Fixtures/golden_v13_6_31.json`)

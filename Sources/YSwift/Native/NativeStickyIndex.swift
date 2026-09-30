@@ -50,9 +50,10 @@ struct NativeRelativePosition: Equatable, Sendable {
 
 extension NativeText {
     /// Builds a sticky index for absolute `index` with association `assoc`
-    /// (`createRelativePositionFromTypeIndex`).
+    /// (`createRelativePositionFromTypeIndex`). An index before the start is the start; past the end, the
+    /// end. Yjs encodes an id before the first item for a negative index, which no document resolves.
     func stickyIndex(at index: Int, assoc: Int64 = 0) -> NativeRelativePosition {
-        var index = index
+        var index = max(0, index)
         var node = self.type.start
         if assoc < 0 {
             if index == 0 { return Self.relativePosition(self.type, item: nil, assoc: assoc) }

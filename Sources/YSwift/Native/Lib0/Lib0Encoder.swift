@@ -111,8 +111,10 @@ struct Lib0Encoder {
             self.writeUInt8(124)
             self.writeFloat32(Float(number))
         } else {
+            // The engine decides which NaN yjs writes back (JSC always this one, V8 mostly the bits it read);
+            // this is the NaN every engine can produce.
             self.writeUInt8(123)
-            self.writeFloat64(number)
+            self.writeFloat64(number.isNaN ? .nan : number)
         }
     }
 }

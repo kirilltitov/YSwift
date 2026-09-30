@@ -63,7 +63,7 @@ struct NativeXml {
             }
         case .text(let string):
             _ = self.makeItem(
-                parent: nested, parentSub: nil, left: nil, right: nil, content: .string(Array(string.utf16)))
+                parent: nested, parentSub: nil, left: nil, right: nil, content: .string(Array(string.utf16)[...]))
         }
         return item
     }
@@ -87,23 +87,31 @@ struct NativeXml {
     // MARK: Serialise (YXmlElement/Fragment.toString)
 
     func string(of type: YTypeImpl) -> String {
+        // Elements are entered without recursion: each open one keeps its next sibling and closing tag.
         var out = ""
         var node = type.start
-        while let item = node {
-            if !item.deleted, case .type(let nested, let typeRef, let name) = item.content {
-                switch typeRef {
-                case 6:
-                    out += Self.textContent(nested)
-                case 3:
-                    let tag = (name ?? "").lowercased()
-                    out += "<\(tag)\(self.attributeString(nested))>\(self.string(of: nested))</\(tag)>"
-                default:
-                    break
-                }
+        var open: [(next: Item?, closingTag: String)] = []
+        while true {
+            guard let item = node else {
+                guard let element = open.popLast() else { return out }
+                out += element.closingTag
+                node = element.next
+                continue
             }
             node = item.right as? Item
+            guard !item.deleted, case .type(let nested, let typeRef, let name) = item.content else { continue }
+            switch typeRef {
+            case 6:
+                out += Self.textContent(nested)
+            case 3:
+                let tag = (name ?? "").lowercased()
+                out += "<\(tag)\(self.attributeString(nested))>"
+                open.append((node, "</\(tag)>"))
+                node = nested.start
+            default:
+                break
+            }
         }
-        return out
     }
 
     private static func textContent(_ type: YTypeImpl) -> String {

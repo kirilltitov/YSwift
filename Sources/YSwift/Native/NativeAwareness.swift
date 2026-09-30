@@ -70,8 +70,10 @@ final class NativeAwareness: @unchecked Sendable {
         var updated: [UInt64] = []
         var removed: [UInt64] = []
         for _ in 0..<count {
+            // A clock no JS number holds exactly is rejected, as lib0 fails to read one; the rest
+            // leave room for the local bump below.
             guard let client = try? decoder.readVarUint(),
-                let clockValue = try? decoder.readVarUint(),
+                let clockValue = try? decoder.readVarUint(), clockValue < 1 << 53,
                 let stateJSON = try? decoder.readVarString()
             else { return false }
             let clock = Int(clockValue)
